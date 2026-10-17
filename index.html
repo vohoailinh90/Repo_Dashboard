@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+kIPiwBhcZr9NSA8lAkhxSsuQOcfwLjr/L5m/7xyboU='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-A9foWL+8MLM1iO2nvf7/Jy/9Zvlk5Ae5urZ+/IrRe2E='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -809,15 +809,55 @@ function cronLabel(expr) {                                                      
 }
 // The lines of a workflow file that are YAML (not blank, not a comment, not the body of a block scalar such as `run: |`), each with where it stands: `onTop` for the
 // top-level `on:` line itself, `onDirect` for a line that is a direct child of `on` (the first line under it fixes how its keys are indented).
+// A flow collection (`[` or `{`) that opens a value and is closed on a later line is one logical line: its lines are joined and their comments dropped, so that `schedule: [`,
+// `{cron: '0 2 * * *'}` and `]` read like the same thing on one line. One that is not closed within FLOW_LINES lines is left as it is, and the file is not swallowed.
+const FLOW_LINES = 60;
+function flowStart(code) {                                                                         // where a flow collection opens a value on this line (after `key:`, `-` or an anchor), or -1
+  let quote = "";
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === "[" || ch === "{") {
+      const before = code.slice(0, i).replace(/(?:[&!]\S+\s*)+$/, "").trimEnd();
+      return before === "" || before.endsWith(":") || before.endsWith("-") ? i : -1;
+    }
+  }
+  return -1;
+}
+function flowDepth(code, depth) {                                                                  // the nesting depth after this text; brackets inside quotes are not counted
+  let quote = "";
+  for (const ch of code) {
+    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "[" || ch === "{") depth++;
+    else if (ch === "]" || ch === "}") depth--;
+  }
+  return depth;
+}
 function yamlLines(text) {
-  const out = [];
+  const out = [], raws = String(text == null ? "" : text).split(/\r?\n/);
   let block = -1, inOn = false, onChild = -1;
-  for (const raw of String(text == null ? "" : text).split(/\r?\n/)) {
-    const line = raw.replace(/\t/g, "    ");
+  for (let i = 0; i < raws.length; i++) {
+    let line = raws[i].replace(/\t/g, "    ");
     if (/^\s*(#.*)?$/.test(line)) continue;
     const lead = line.length - line.trimStart().length;
     if (block >= 0) { if (lead > block) continue; block = -1; }                      // inside `run: |`: text, not YAML
     if (/(?:^|[:-])\s+[|>][+-]?\d*\s*(?:#.*)?$/.test(line)) block = lead;
+    else {
+      const code = line.replace(/(^|\s)#.*$/, "");
+      if (flowStart(code) >= 0) {
+        let depth = flowDepth(code, 0), joined = code.trimEnd(), j = i;
+        while (depth > 0 && j + 1 < raws.length && j - i < FLOW_LINES) {
+          j++;
+          const next = raws[j].replace(/\t/g, "    ").replace(/(^|\s)#.*$/, "");
+          if (/^\s*$/.test(next)) continue;
+          joined += " " + next.trim();
+          depth = flowDepth(next, depth);
+        }
+        if (depth <= 0 && j > i) { line = joined; i = j; }
+      }
+    }
     const item = lead === 0 && inOn && /^-(?:\s|$)/.test(line);                                        // `on:` followed by a list that is not indented: its items belong to `on`
     if (lead === 0 && !item) { inOn = /^(?:on|"on"|'on')\s*:/.test(line); onChild = -1; }               // a top-level key: `on` opens its scope, any other closes it
     else if (inOn && onChild < 0) onChild = lead;
@@ -994,6 +1034,7 @@ function weekPlan(models, nowMs, days) {
   for (const m of models) {
     if (!m || !m.ok) continue;
     for (const wf of m.workflows || []) {
+      if (wf.state && wf.state !== "active") continue;                                                // a workflow that is switched off runs nothing
       for (const cron of wf.crons || []) {
         const c = parseCron(cron);
         if (!c) continue;
@@ -1012,7 +1053,7 @@ function countScheduled(models, fromMs, untilMs) {
   let n = 0;
   for (const m of models) {
     if (!m || !m.ok) continue;
-    for (const wf of m.workflows || []) for (const cron of wf.crons || []) n += occurrences(cron, fromMs, untilMs, 2000).length;
+    for (const wf of m.workflows || []) if (!wf.state || wf.state === "active") for (const cron of wf.crons || []) n += occurrences(cron, fromMs, untilMs, 2000).length;
   }
   return n;
 }
@@ -1407,6 +1448,7 @@ async function call(path, opts) {
   const etag = res.headers.get("etag");
   if (res.status === 200 && etag && gen === state.gen) state.etags.set(slot, { etag, data });      // an answer to a question asked before the token changed is not kept
   const wait = coolOff(res.status, res.headers.get("retry-after"), res.headers.get("x-ratelimit-remaining"), data && data.message, state.cool.hits);
+  if (gen === state.gen && (wait > 0 || ((res.status === 403 || res.status === 429) && res.headers.get("x-ratelimit-remaining") === "0"))) state.refused++;       // the answer that began a wait is a request the look lost too
   if (gen === state.gen) {
     if (wait > 0) { state.cool.until = Math.max(state.cool.until, Date.now() + wait); state.cool.hits++; renderRate(); setTimeout(renderRate, Math.min(wait, 3600000) + 100); }
     else if (res.status < 400) good();
@@ -1477,7 +1519,8 @@ async function loadRepo(repo) {
   const pullsRead = pullsRes.status === 200 && Array.isArray(pullsRes.data), pullsMore = !!pullsRes.more;                  // a list that could not be read is not an empty list
   if (pullsMore) warnings.push("Repo có thể còn PR mở nữa: chỉ đọc " + pulls.length + " PR mới nhất (giới hạn " + MAX_PULL_PAGES * LIST_PAGE + ").");
   const workflows = wfList.map((w) => Object.assign({ crons: [], dispatch: false, runs: runList.filter((r) => r.wfId === w.id) }, w));
-  const sources = workflows.filter((w) => w.state === "active" && safeWorkflowPath(w.path)), readable = sources.slice(0, FILES_MAX);
+  // The files of the active workflows first, then those of workflows that are switched off (their triggers are shown as blocked, never counted as runs to come).
+  const sources = [...workflows.filter((w) => w.state === "active"), ...workflows.filter((w) => w.state !== "active" && w.state !== "deleted")].filter((w) => safeWorkflowPath(w.path)), readable = sources.slice(0, FILES_MAX);
   let unread = 0;                                                                                          // a workflow whose file was not got declares "nothing" only because nobody could look
   for (let i = 0; i < readable.length; i += 8) {
     await Promise.all(readable.slice(i, i + 8).map(async (w) => {
@@ -1718,7 +1761,7 @@ function boardDetail(n) {
   const where = n.ref && n.ref.run ? extLink(gh(n.repo, "/actions/runs/" + n.ref.run), "Mở lượt chạy " + n.code + " trên GitHub")
     : n.ref && n.ref.pr ? extLink(gh(n.repo, "/pull/" + n.ref.pr), "Mở " + n.code + " trên GitHub")
     : n.ref && n.ref.path ? extLink(workflowUrl(n.repo, n.ref.path), "Mở workflow trên GitHub") : null;
-  const next = n.kind === "cron" && n.cron ? nextOccurrence(n.cron, Date.now()) : null;
+  const next = n.kind === "cron" && n.cron && n.status !== "blocked" ? nextOccurrence(n.cron, Date.now()) : null;                 // a trigger of a workflow that is switched off has no next run
   return [h("b", { text: n.code + " · " + n.title }), " (" + n.repo + ") · " + n.chip + (next ? " · kế tiếp " + new Date(next).toLocaleString("vi-VN", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "")
     + (n.attempt > 1 ? " · lần thử " + n.attempt : "") + (n.agent && n.agent !== "bot" ? " · có vẻ do agent " + n.agent : "") + (where ? " · " : ""), where];
 }
@@ -1748,7 +1791,7 @@ function drawEdges() {
 // ---- Repo ----
 function workflowRow(model, wf) {
   const k = model.repo + "|" + wf.id, latest = wf.runs[0] || null, st = latest ? runState(latest) : null, hist = sparkHistory(wf.runs, 12);
-  const crons = (wf.crons || []).map((c) => ({ c, next: nextOccurrence(c, Date.now()) })).filter((x) => x.next !== null).sort((a, b) => a.next - b.next);
+  const crons = (wf.state && wf.state !== "active" ? [] : wf.crons || []).map((c) => ({ c, next: nextOccurrence(c, Date.now()) })).filter((x) => x.next !== null).sort((a, b) => a.next - b.next);
   const sched = crons.length ? h("span", { class: "sched", title: crons.map((x) => cronLabel(x.c)).join(" · ") },
     "⏱ " + describeCron(crons[0].c) + " · kế tiếp " + new Date(crons[0].next).toLocaleString("vi-VN", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) + " (" + ago((Date.now() - crons[0].next) / 1000) + ")") : null;
   const d = h("details", { class: "wf" },

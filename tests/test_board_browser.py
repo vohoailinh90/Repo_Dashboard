@@ -92,6 +92,7 @@ class Github:
         self.reset = int(time.time()) + 3000                      # one window: GitHub gives every answer of it the same reset time
         self.not_modified = 0
         self.extra: dict = {}                                     # headers added to every answer (a Retry-After, for example)
+        self.remaining_at: dict = {}                              # {path: count}: the count that the answer for one path reports, instead of `remaining`
 
     def handle(self, route, request):
         if request.method == "OPTIONS":
@@ -99,7 +100,7 @@ class Github:
         path = request.url.split("https://api.github.com", 1)[1]
         clean = path.split("?", 1)[0]
         self.requests.append({"method": request.method, "path": path, "clean": clean, "headers": request.headers})
-        rate = {"x-ratelimit-remaining": str(self.remaining), "x-ratelimit-limit": "5000", "x-ratelimit-reset": str(self.reset), **self.extra}
+        rate = {"x-ratelimit-remaining": str(self.remaining_at.get(clean, self.remaining)), "x-ratelimit-limit": "5000", "x-ratelimit-reset": str(self.reset), **self.extra}
         if clean not in self.routes:
             return route.fulfill(status=404, headers={**CORS, **rate}, content_type="application/json", body='{"message":"Not Found"}')
         status, body = self.routes[clean]
@@ -1429,6 +1430,64 @@ def test_a_look_that_lost_requests_to_the_wait_does_not_replace_what_was_read_in
     repos(page)
     card = text(page, "#repo-grid .repo")
     assert "PR mở: 1" in card and "Không đọc được PR" not in card and "chưa đọc được lịch sử" not in card         # the model read in full is still the one on the page, with no warning from the partial look
+    context.close()
+
+
+def test_the_answer_that_begins_a_wait_counts_as_a_lost_request_even_when_it_is_the_last_of_the_look(browser):
+    context, page = new_page(browser)
+    page.goto(PAGE_URL)
+    loaded(page)
+    quiet(page)
+    assert "build" in text(page, "#home-runs .pipe")
+    page.gh.routes[f"/repos/{REPO}/actions/runs/101/jobs"] = (403, SECONDARY)               # the steps of the one run in progress are the last thing the look asks for
+    page.gh.extra = {"retry-after": "300"}
+    open_tab(page, "settings")
+    page.click("#refresh")
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    quiet(page)
+    open_tab(page, "home")
+    assert "build" in text(page, "#home-runs .pipe") and "Chưa đọc được các bước" not in text(page, "#home-runs .pipe")       # the steps read before are still there
+    context.close()
+
+
+def test_the_answer_that_spends_the_hourly_count_counts_as_a_lost_request_even_when_it_is_the_last_of_the_look(browser):
+    context, page = new_page(browser)
+    page.goto(PAGE_URL)
+    loaded(page)
+    quiet(page)
+    assert "build" in text(page, "#home-runs .pipe")
+    jobs = f"/repos/{REPO}/actions/runs/101/jobs"
+    page.gh.routes[jobs] = (403, {"message": "API rate limit exceeded"})                    # the last question of the look is the one that is refused for want of count
+    page.gh.remaining_at[jobs] = 0
+    open_tab(page, "settings")
+    page.click("#refresh")
+    quiet(page)
+    page.wait_for_timeout(300)
+    open_tab(page, "home")
+    assert "build" in text(page, "#home-runs .pipe") and "Chưa đọc được các bước" not in text(page, "#home-runs .pipe")
+    context.close()
+
+
+def test_a_workflow_that_is_switched_off_and_never_ran_still_shows_its_triggers_as_blocked(browser):
+    context, page = new_page(browser)
+    workflows = page.gh.routes[f"/repos/{REPO}/actions/workflows"][1]["workflows"]
+    page.gh.routes[f"/repos/{REPO}/actions/workflows"] = (200, {"workflows": workflows + [
+        {"id": 4, "name": "Old job", "path": ".github/workflows/old.yml", "state": "disabled_manually"},
+        {"id": 5, "name": "Gone job", "path": ".github/workflows/gone.yml", "state": "deleted"}]})
+    page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/old.yml"] = (200, "on:\n  schedule:\n    - cron: '0 5 * * *'\n  workflow_dispatch:\n")
+    page.goto(PAGE_URL)
+    loaded(page)
+    assert [p for p in page.gh.paths() if p.endswith("/old.yml")]                             # its file was read
+    assert not [p for p in page.gh.paths() if p.endswith("/gone.yml")]                        # the file of a deleted workflow is not asked for: it is not there
+    board(page)
+    nodes = page.eval_on_selector_all("#wavegrid button.node", "els => els.map(e => e.textContent)")
+    assert any("CRON" in t and "Tắt" in t and "05:00" in t for t in nodes)                  # the cron it declares, as a blocked trigger (the manual trigger is one node of the repository that all its workflows share)
+    open_tab(page, "home")
+    assert "Old job" not in text(page, "#ready-now")                                          # it declares workflow_dispatch but cannot be started: not offered
+    open_tab(page, "schedule")
+    assert "Old job" not in text(page, "#view-schedule")                                       # and it runs nothing: it is not in the plan
+    repos(page)
+    assert "kế tiếp" not in page.locator("details.wf", has_text="Old job").inner_text()
     context.close()
 
 

@@ -995,6 +995,32 @@ def test_the_week_plan_and_the_count_follow_the_zone_of_the_schedule():
     assert _one("countScheduled", [_model(workflows=[wf])], NOW, NOW + 86400000) == 2
 
 
+def test_a_workflow_that_is_switched_off_has_no_runs_to_come():
+    base = {"id": 1, "name": "Nightly", "path": ".github/workflows/n.yml", "runs": [], "crons": ["0 1 * * *"]}
+    on, off, plain = {**base, "state": "active"}, {**base, "state": "disabled_manually"}, dict(base)
+    assert [len(_one("weekPlan", [_model(workflows=[w])], NOW, 1)["items"]) for w in (on, off, plain)] == [1, 0, 1]
+    assert [_one("countScheduled", [_model(workflows=[w])], NOW, NOW + 86400000) for w in (on, off, plain)] == [1, 0, 1]
+    node = [n for n in _one("boardModel", [_model(workflows=[off])], NOW)["nodes"] if n["kind"] == "cron"]
+    assert [(n["status"], n["chip"]) for n in node] == [("blocked", "Tắt")]                     # the board still shows the trigger, as blocked
+
+
+def test_a_flow_collection_written_over_several_lines_is_read_like_one_on_a_single_line():
+    crons = [("on:\n  schedule: [\n    {cron: '0 2 * * *'}\n  ]\n", ["0 2 * * *"]),
+             ("on:\n  schedule: [\n    {cron: '0 3 * * *'},  # night\n\n    {cron: '0 4 * * *'},\n  ]\n", ["0 3 * * *", "0 4 * * *"]),
+             ("on: {\n  push: {},\n  schedule: [{cron: '0 5 * * *'}],\n  workflow_dispatch: {}\n}\n", ["0 5 * * *"]),
+             ("on:\n  schedule: [\n    {cron: '0 6 * * *'}\n", []),                                                      # never closed: nothing is swallowed, nothing guessed
+             ("on:\n  schedule: [\n    {cron: '0 7 * * *'}\n  ]\njobs:\n  a:\n    steps:\n      - run: echo \"[\"\n", ["0 7 * * *"]),
+             ("name: build [\non:\n  schedule:\n    - cron: '0 8 * * *'\n", ["0 8 * * *"]),                                # a bracket that opens no collection joins nothing
+             ("on:\n  push:\n    branches: [\n      main\n    ]\n  schedule:\n    - cron: '0 9 * * *'\n", ["0 9 * * *"]),
+             ("on: &t {\n  schedule: [\n    {cron: '0 10 * * *', timezone: Asia/Tokyo}\n  ]\n}\n", ["CRON_TZ=Asia/Tokyo 0 10 * * *"]),
+             ("on:\n  schedule: [{cron: '0 11 * * *'}]\n  push:\n    paths: [\n      'a/**'\n    ]\n", ["0 11 * * *"]),
+             ("on:\n  schedule: [\n    {cron: '0 12 * * *'},  # not also {cron: '0 13 * * *'}\n  ]\n", ["0 12 * * *"])]                   # a comment inside the collection is not part of it
+    assert _node([["extractCrons", [t]] for t, _ in crons]) == [expected for _, expected in crons]
+    dispatch = [("on: [\n  push,\n  workflow_dispatch\n]\n", True), ("on: [\n  push\n]\n", False), ("on: {\n  push: {},\n  workflow_dispatch: {}\n}\n", True),
+                ("on: {\n  push: {branches: [\n    workflow_dispatch\n  ]}\n}\n", False), ("on:\n  workflow_dispatch:\n    inputs: {\n      a: {}\n    }\n", True)]
+    assert _node([["hasDispatch", [t]] for t, _ in dispatch]) == [expected for _, expected in dispatch]
+
+
 # ---- a run with more than a hundred jobs ---------------------------------------------------------------------------------------------
 
 def _gh_job(i):
