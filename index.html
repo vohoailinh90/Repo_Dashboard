@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-hLaJO+ovW5Jvd7lEI9ejMijmdOMG6HTb9sK7QSTf9vU='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-qcUwtkcqHoK6uZDIpNEqhljvbLfkel9XYNVhMmyE7DM='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -552,6 +552,20 @@ function normJob(j) {
   if (!j || !Number.isInteger(j.id)) return null;
   return { id: j.id, name: clip(j.name, 80), status: clip(j.status, 30), conclusion: j.conclusion == null ? null : clip(j.conclusion, 30),
            startedAt: j.started_at || null, completedAt: j.completed_at || null, steps: (Array.isArray(j.steps) ? j.steps : []).slice(0, 60).map(normStep) };
+}
+const JOB_PAGE = 100, MAX_JOB_PAGES = 5;
+// A run lists its jobs a hundred to a page and says how many it has in all (total_count). The pages to ask for after the first, never more than MAX_JOB_PAGES in all.
+function morePages(first) {
+  const total = first && Number.isInteger(first.total_count) ? first.total_count : 0, got = first && Array.isArray(first.jobs) ? first.jobs.length : 0;
+  const pages = Math.min(MAX_JOB_PAGES, Math.ceil(total / JOB_PAGE));
+  return got < JOB_PAGE ? [] : Array.from({ length: Math.max(0, pages - 1) }, (_, i) => i + 2);
+}
+// The jobs of every page that was read, each once, and how many of the run's jobs are still missing (pages not asked for, or one that failed).
+function gatherJobs(first, rest) {
+  const seen = new Set(), jobs = [];
+  for (const page of [first.jobs, ...rest]) for (const j of (Array.isArray(page) ? page : []).map(normJob)) if (j && !seen.has(j.id)) { seen.add(j.id); jobs.push(j); }
+  const total = Number.isInteger(first.total_count) ? first.total_count : 0;
+  return { jobs, omitted: Math.max(0, total - jobs.length) };
 }
 function normPull(p) {
   if (!p || !Number.isInteger(p.number)) return null;
@@ -1177,7 +1191,7 @@ function buildDemo(spec, nowMs) {
 // ---- the page ----
 const $ = (id) => document.getElementById(id);
 const state = { repos: [], models: new Map(), demo: false, saved: null, office: null, realOffice: null, rate: null, interval: 60, open: new Set(), jobsCache: new Map(),
-                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0,
+                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0,
                 view: "home", theme: "neon", mode: "auto", group: "flow", filter: { repo: "", status: "", q: "", rest: "collapse" }, focus: null, chain: null, boardEdges: [], rowOpen: new Map(), calls: 0 };
 const keyOf = (repo) => repo.toLowerCase();
 
@@ -1293,23 +1307,35 @@ async function loadRepo(repo) {
   const active = [];
   for (const w of workflows) for (const run of w.runs) if (runState(run).active) active.push({ run, wf: { id: w.id, name: w.name, path: w.path } });
   active.sort((a, b) => (isoMs(b.run.createdAt) || 0) - (isoMs(a.run.createdAt) || 0));
-  const shown = active.slice(0, 4), jobs = {};
+  const shown = active.slice(0, 4), jobs = {}, jobsOmitted = {};
   await Promise.all(shown.map(async (a) => {
-    const res = await call(base + "/actions/runs/" + a.run.id + "/jobs?per_page=100");
-    jobs[a.run.id] = res.status === 200 && res.data && Array.isArray(res.data.jobs) ? res.data.jobs.map(normJob).filter(Boolean) : null;
+    const got = await readJobs(base + "/actions/runs/" + a.run.id + "/jobs");
+    jobs[a.run.id] = got ? got.jobs : null;
+    if (got && got.omitted) jobsOmitted[a.run.id] = got.omitted;
   }));
-  return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, pulls, agentFiles };
+  return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, jobsOmitted, pulls, agentFiles };
 }
 // Steps of a finished run never change, so they are kept; the steps of a run still going are only trusted for 30 seconds.
 async function loadJobs(model, run) {
   const k = model.repo + "#" + run.id;
   if (jobsOf(model, run) !== undefined || state.loadingJobs.has(k) || state.demo) return;
   state.loadingJobs.add(k);
-  const gen = state.gen, res = await call("/repos/" + model.repo + "/actions/runs/" + run.id + "/jobs?per_page=100");
+  const gen = state.gen, got = await readJobs("/repos/" + model.repo + "/actions/runs/" + run.id + "/jobs");
   state.loadingJobs.delete(k);
   if (gen !== state.gen) return;
-  state.jobsCache.set(k, { at: Date.now(), active: runState(run).active, jobs: res.status === 200 && res.data && Array.isArray(res.data.jobs) ? res.data.jobs.map(normJob).filter(Boolean) : null });
+  state.jobsCache.set(k, { at: Date.now(), active: runState(run).active, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0 });
   render();
+}
+async function readJobs(path) {                                          // path: ".../actions/runs/{id}/jobs"; null when the first page cannot be read
+  const first = await call(path + "?per_page=" + JOB_PAGE);
+  if (first.status !== 200 || !first.data || !Array.isArray(first.data.jobs)) return null;
+  const rest = await Promise.all(morePages(first.data).map((n) => call(path + "?per_page=" + JOB_PAGE + "&page=" + n)));
+  return gatherJobs(first.data, rest.map((r) => (r.status === 200 && r.data ? r.data.jobs : null)));
+}
+function omittedOf(model, run) {                                         // jobs of the run that were not read (see gatherJobs)
+  if (model.jobs && Object.prototype.hasOwnProperty.call(model.jobs, run.id)) return (model.jobsOmitted && model.jobsOmitted[run.id]) || 0;
+  const e = state.jobsCache.get(model.repo + "#" + run.id);
+  return (e && e.omitted) || 0;
 }
 function jobsOf(model, run) {
   if (model.jobs && Object.prototype.hasOwnProperty.call(model.jobs, run.id)) return model.jobs[run.id];
@@ -1404,6 +1430,7 @@ function pipelineBody(model, run) {
   return [
     p.max && runState(run).active ? h("div", { class: "prog" }, h("progress", { value: p.value, max: p.max, "aria-label": "Tiến độ " + model.repo + " lượt " + run.number }),
       h("span", { class: "small", text: (p.stepsTotal ? p.stepsDone + "/" + p.stepsTotal + " bước · " : "") + p.jobsDone + "/" + p.jobs + " job" + (p.partial ? " (ước lượng: có job chưa bắt đầu)" : "") })) : null,
+    omittedOf(model, run) ? h("p", { class: "small bad", text: "Lượt chạy này còn " + omittedOf(model, run) + " job nữa chưa đọc được (trang đọc tối đa " + MAX_JOB_PAGES * JOB_PAGE + " job): số job và tiến độ ở trên chưa đủ." }) : null,
     flowView(flow),
     flow.attempt ? h("p", { class: "small muted", text: "⟲ lần thử thứ " + flow.attempt }) : null,
     jobs.length ? rowsView(model, run, jobs, flow.totals) : h("p", { class: "small muted", text: "Chưa có job nào: đang chờ runner." }),
@@ -1774,9 +1801,9 @@ async function onPickLoad() {
   const owner = $("pick-owner").value.trim();
   if (!token() && !segmentOk(owner)) return say("link-msg", "Nhập tên tài khoản hoặc tổ chức (hoặc dán token để liệt kê repo của bạn).", "bad");
   say("link-msg", "Đang tải danh sách…");
-  const gen = state.gen;
+  const gen = state.gen, seq = ++state.pickSeq;
   const res = await call(token() ? "/user/repos?sort=pushed&per_page=100&affiliation=owner,collaborator,organization_member" : "/users/" + owner + "/repos?sort=pushed&per_page=100&type=owner");
-  if (gen !== state.gen) return;                                                     // the token changed while this was on its way: the answer belongs to the old one and is dropped
+  if (gen !== state.gen || seq !== state.pickSeq) return;                            // the token changed, or a newer load was asked for, while this was on its way: the answer is dropped
   if (res.status !== 200 || !Array.isArray(res.data)) return say("link-msg", explain(res.status, res.data), "bad");
   state.pickList = res.data.map((r) => ({ name: parseRepo(r && r.full_name), owner: String(r && r.owner && r.owner.login || ""), private: !!(r && r.private), pushedAt: r && r.pushed_at }))
     .filter((r) => r.name && (!owner || r.owner.toLowerCase() === owner.toLowerCase())).slice(0, 100);

@@ -33,7 +33,7 @@ FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normIn
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs")
 
 
 def _node(cases: list) -> list:
@@ -893,3 +893,26 @@ def test_the_week_plan_and_the_count_follow_the_zone_of_the_schedule():
     plan = _one("weekPlan", [_model(workflows=[wf])], NOW, 1)
     assert [(_utc(i["ms"])[0], i["cron"]) for i in plan["items"]] == [("2026-10-17T00:00Z", "CRON_TZ=Asia/Tokyo 0 9 * * *"), ("2026-10-17T01:00Z", "0 1 * * *")]
     assert _one("countScheduled", [_model(workflows=[wf])], NOW, NOW + 86400000) == 2
+
+
+# ---- a run with more than a hundred jobs ---------------------------------------------------------------------------------------------
+
+def _gh_job(i):
+    return {"id": i, "name": f"j{i}", "status": "completed", "conclusion": "success", "steps": []}
+
+
+def test_the_pages_of_jobs_still_to_ask_for_follow_the_total_the_run_reports_and_stop_at_a_limit():
+    hundred = [_gh_job(i) for i in range(100)]
+    cases = [{"jobs": hundred, "total_count": 100}, {"jobs": hundred, "total_count": 101}, {"jobs": hundred, "total_count": 250}, {"jobs": hundred, "total_count": 10 ** 6},
+             {"jobs": hundred[:99], "total_count": 500}, {"jobs": hundred}, {"jobs": hundred, "total_count": "9"}, None, {"jobs": hundred, "total_count": -5}]
+    assert _node([["morePages", [c]] for c in cases]) == [[], [2], [2, 3], [2, 3, 4, 5], [], [], [], [], []]
+
+
+def test_the_jobs_of_all_pages_are_joined_once_each_and_the_missing_ones_are_counted():
+    first = {"jobs": [_gh_job(i) for i in range(100)], "total_count": 230}
+    got = _node([["gatherJobs", [first, [[_gh_job(i) for i in range(100, 200)], [_gh_job(i) for i in range(200, 230)]]]],           # all there
+                 ["gatherJobs", [first, [[_gh_job(i) for i in range(100, 200)], None]]],                                            # a page that failed
+                 ["gatherJobs", [first, []]],                                                                                       # the later pages not asked for
+                 ["gatherJobs", [{"jobs": [_gh_job(1), _gh_job(1), _gh_job(2)], "total_count": 3}, [[_gh_job(2)]]]],              # a job listed twice counts once
+                 ["gatherJobs", [{"jobs": [_gh_job(1)]}, []]]])                                                                    # no total: nothing to say is missing
+    assert [(len(g["jobs"]), g["omitted"]) for g in got] == [(230, 0), (200, 30), (100, 130), (2, 1), (1, 0)]

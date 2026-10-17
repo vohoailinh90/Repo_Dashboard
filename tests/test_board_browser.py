@@ -594,6 +594,82 @@ def test_a_list_still_on_its_way_when_the_token_is_forgotten_is_dropped_when_it_
     context.close()
 
 
+def test_a_picker_load_overtaken_by_a_newer_one_is_dropped_when_it_arrives(browser):
+    context, page = new_page(browser)
+    held = []
+    context.route("https://api.github.com/users/slowowner/repos**", lambda route, request: route.fulfill(status=204, headers=PREFLIGHT) if request.method == "OPTIONS" else held.append(route))
+    page.gh.routes["/users/fastowner/repos"] = (200, [{"full_name": "fastowner/new", "owner": {"login": "fastowner"}, "private": False, "pushed_at": iso(60)}])
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.click("#pick")
+    page.fill("#pick-owner", "slowowner")
+    page.click("#pick-load")
+    deadline = time.monotonic() + 8
+    while not held and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert held                                                                             # the first load is out and waiting
+    page.fill("#pick-owner", "fastowner")
+    page.click("#pick-load")
+    wait(page, "document.querySelectorAll('#pick-list input').length === 1")
+    held[0].fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps([{"full_name": "slowowner/old", "owner": {"login": "slowowner"}, "private": False, "pushed_at": iso(60)}]))
+    page.wait_for_timeout(600)                                                              # long enough for the old code to have drawn it
+    assert "fastowner/new" in text(page, "#pick-list") and "slowowner/old" not in text(page, "body") and page.locator("#pick-list li").count() == 1
+    context.close()
+
+
+def paged_jobs(context, total, run_id=101):
+    """The jobs of a run as GitHub gives them: a hundred to a page, `total_count` for all. Returns the list of pages asked for."""
+    asked = []
+
+    def handle(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        found = re.search(r"[?&]page=(\d+)", request.url)
+        n = int(found.group(1)) if found else 1
+        asked.append(n)
+        jobs = [{"id": 5000 + i, "name": f"shard-{i}", "status": "completed", "conclusion": "success", "started_at": iso(500), "completed_at": iso(400), "steps": []}
+                for i in range((n - 1) * 100, min(total, n * 100))]
+        route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps({"total_count": total, "jobs": jobs}))
+    context.route(f"https://api.github.com/repos/{REPO}/actions/runs/{run_id}/jobs**", handle)
+    return asked
+
+
+def test_a_run_with_more_than_a_hundred_jobs_is_read_page_by_page(browser):
+    context, page = new_page(browser)
+    asked = paged_jobs(context, 150)
+    page.goto(PAGE_URL)
+    loaded(page)
+    assert "150 job" in text(page, "#home-runs .pipe .total") and sorted(set(asked)) == [1, 2]
+    assert page.locator("#home-runs .pipe p.bad").count() == 0                              # nothing is missing, so nothing is said to be
+    context.close()
+
+
+def test_the_jobs_of_a_finished_run_are_read_page_by_page_when_its_row_is_opened(browser):
+    context, page = new_page(browser)
+    asked = paged_jobs(context, 620, run_id=90)
+    page.goto(PAGE_URL)
+    loaded(page)
+    open_tab(page, "repos")
+    wait(page, "document.querySelector('#repo-grid .repo h3 a') !== null")
+    row = page.locator("details.wf", has_text="Nightly")
+    assert asked == []                                                                      # nothing is read until it is opened
+    row.locator("summary").click()
+    wait(page, "document.querySelectorAll('details.wf[open] .total').length === 1")
+    assert "500 job" in row.locator(".total").inner_text() and sorted(set(asked)) == [1, 2, 3, 4, 5]
+    assert "120 job nữa chưa đọc được" in row.locator("p.bad").inner_text()                 # the same note as on Home, for the other way a run's jobs are read
+    context.close()
+
+
+def test_a_run_with_far_more_jobs_is_read_up_to_five_pages_and_says_how_many_are_left_out(browser):
+    context, page = new_page(browser)
+    asked = paged_jobs(context, 700)
+    page.goto(PAGE_URL)
+    loaded(page)
+    assert "500 job" in text(page, "#home-runs .pipe .total") and sorted(set(asked)) == [1, 2, 3, 4, 5]             # a sixth page is never asked for
+    assert "200 job nữa chưa đọc được" in text(page, "#home-runs .pipe p.bad")
+    context.close()
+
+
 # ---- repositories ---------------------------------------------------------------------------------------------------------------
 
 def test_a_wrong_name_sends_nothing_and_a_right_one_is_linked_saved_and_removable(ui):
