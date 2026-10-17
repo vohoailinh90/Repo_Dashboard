@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-BufXZY+s92WV3bgLpQkVyVmgR9pAOshx+xPZh8C+fH8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-sya04atlAQQGEUcRWt4TbhXOvHwJq4rqAUuGw4Bd/oo='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1325,16 +1325,19 @@ async function loadRepo(repo) {
     ? agentsRes.data.filter((f) => f && f.type === "file" && /\.md$/i.test(String(f.name))).map((f) => clip(String(f.name).replace(/\.md$/i, ""), 60)).slice(0, 30) : null;
   // The 40 newest runs of the whole repository are crowded by the busiest workflow: a scan that runs twice a week would show no history at all.
   const crowded = workflows.filter((w) => w.state === "active" && w.runs.length < 3), asked = crowded.slice(0, HISTORY_MAX);
+  let failed = 0;                                                                                          // histories asked for and not got: they are told apart from "never ran"
   for (let i = 0; i < asked.length; i += 8) {                                                              // eight at a time: a big repository must not be a burst of two dozen requests
     await Promise.all(asked.slice(i, i + 8).map(async (w) => {
       const res = await call(base + "/actions/workflows/" + w.id + "/runs?per_page=12");
-      if (res.status !== 200 || !res.data || !Array.isArray(res.data.workflow_runs)) return;
+      if (res.status !== 200 || !res.data || !Array.isArray(res.data.workflow_runs)) { failed++; return; }
       const have = new Set(w.runs.map((r) => r.id));
       for (const r of res.data.workflow_runs.map(normRun).filter(Boolean)) if (!have.has(r.id)) w.runs.push(r);
       w.runs.sort((a, b) => (isoMs(b.createdAt) || 0) - (isoMs(a.createdAt) || 0));
     }));
   }
-  if (crowded.length > asked.length) warnings.push((crowded.length - asked.length) + " workflow chưa đọc được lịch sử (giới hạn " + HISTORY_MAX + " yêu cầu): trạng thái của chúng có thể sai, một lỗi cũ có thể chưa hiện.");
+  const skipped = crowded.length - asked.length;
+  if (skipped + failed > 0) warnings.push((skipped + failed) + " workflow chưa đọc được lịch sử (" + [skipped ? "quá giới hạn " + HISTORY_MAX + " yêu cầu" : "", failed ? "GitHub không trả lời" : ""].filter(Boolean).join("; ")
+                                           + "): trạng thái của chúng có thể sai, một lỗi cũ có thể chưa hiện.");
   const active = [];
   for (const w of workflows) for (const run of w.runs) if (runState(run).active) active.push({ run, wf: { id: w.id, name: w.name, path: w.path } });
   active.sort((a, b) => (isoMs(b.run.createdAt) || 0) - (isoMs(a.run.createdAt) || 0));

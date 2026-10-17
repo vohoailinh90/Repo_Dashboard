@@ -786,6 +786,16 @@ def test_the_repository_picker_reads_further_pages_up_to_five(browser):
         context.close()
 
 
+def test_a_workflow_history_that_could_not_be_read_is_not_passed_off_as_never_having_run(browser):
+    context, page = new_page(browser)
+    page.gh.routes[f"/repos/{REPO}/actions/workflows/3/runs"] = (500, {"message": "boom"})            # the weekly scan lives only in its own history: GitHub fails it
+    page.goto(PAGE_URL)
+    loaded(page)
+    repos(page)
+    assert "1 workflow chưa đọc được lịch sử (GitHub không trả lời)" in text(page, "#repo-grid .repo")
+    context.close()
+
+
 def test_workflows_crowded_out_of_the_repository_list_are_read_up_to_two_dozen_and_the_rest_are_owned_up_to(browser):
     context, page = new_page(browser)
     base = f"/repos/{REPO}"
