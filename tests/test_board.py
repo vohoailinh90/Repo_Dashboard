@@ -1057,6 +1057,17 @@ def test_an_anchor_a_tag_or_an_alias_in_front_of_a_flow_cron_value_is_resolved()
     assert _node([["extractCrons", [t]] for t, _ in cases]) == [expected for _, expected in cases]
 
 
+def test_an_anchor_or_a_tag_anywhere_in_front_of_a_schedule_node_is_skipped():
+    cases = [("on:\n  schedule: !!seq [{cron: '0 2 * * *'}]\n", ["0 2 * * *"]), ("on:\n  schedule: &s !!seq [{cron: '0 3 * * *'}]\n", ["0 3 * * *"]),
+             ("on:\n  schedule:\n    - !!map {cron: '0 4 * * *'}\n", ["0 4 * * *"]), ("on:\n  schedule:\n    - &c !!map {cron: '0 4 * * *'}\n", ["0 4 * * *"]),
+             ("on:\n  schedule:\n    - cron: !!str '0 5 * * *'\n", ["0 5 * * *"]), ("on:\n  schedule:\n    - cron: &c !!str 0 6 * * *\n", ["0 6 * * *"]),
+             ("on:\n  schedule:\n    - !!str cron: '0 7 * * *'\n", ["0 7 * * *"]), ("on:\n  schedule:\n    - &k cron: '0 8 * * *'\n      &t timezone: UTC\n", ["CRON_TZ=UTC 0 8 * * *"]),
+             ("on:\n  !!str schedule:\n    - cron: '0 9 * * *'\n", ["0 9 * * *"]), ("on:\n  &s schedule: [{cron: '0 10 * * *'}]\n", ["0 10 * * *"]),
+             ("on:\n  schedule:\n    - cron: '0 11 * * *'\n      timezone: !!str UTC\n", ["CRON_TZ=UTC 0 11 * * *"]),
+             ("env:\n  schedule: !!seq [{cron: '0 1 * * *'}]\non:\n  push:\n", []), ("on:\n  schedule: !!seq [{note: x}]\n", [])]
+    assert _node([["extractCrons", [t]] for t, _ in cases]) == [expected for _, expected in cases]
+
+
 def test_an_anchor_or_a_tag_on_the_on_key_itself_does_not_hide_the_triggers():
     cases = [("&triggers on:\n  schedule:\n    - cron: '0 2 * * *'\n  workflow_dispatch:\n", ["0 2 * * *"], True), ("!!str on: [push, workflow_dispatch]\n", [], True),
              ("&t \"on\": {schedule: [{cron: '0 3 * * *'}]}\n", ["0 3 * * *"], False), ("&a !!str 'on':\n  - workflow_dispatch\n", [], True),

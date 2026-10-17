@@ -1741,6 +1741,53 @@ def test_a_row_waiting_for_its_steps_is_not_left_waiting_by_the_read_of_an_earli
     context.close()
 
 
+def test_a_refresh_during_the_first_look_at_a_new_repository_joins_that_look(browser):
+    context, page = new_page(browser, repos=())
+    take = {"route": None}
+    hold_first(context, rf"https://api\.github\.com/repos/{REPO}$", take)
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#add-repo", REPO)
+    page.click("#add")                                                                       # its first look begins, and is kept at its first step
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None
+    page.click("#refresh")                                                                   # the person asks for a refresh before it has finished
+    page.wait_for_timeout(500)
+    assert not [r for r in page.gh.requests if r["clean"] == f"/repos/{REPO}"]               # no second look was started beside the first
+    release(page, take)
+    repos(page)
+    wait(page, "(document.querySelector('#repo-grid .repo') || {textContent: ''}).textContent.includes('PR mở')")
+    quiet(page)
+    assert len([r for r in page.gh.requests if r["clean"] == f"/repos/{REPO}"]) == 0         # and when it was over, the refresh was too
+    context.close()
+
+
+def test_a_replaced_token_does_not_join_the_look_that_belongs_to_the_old_one(browser):
+    context, page = new_page(browser, repos=())
+    take = {"route": None}
+    hold_first(context, rf"https://api\.github\.com/repos/{REPO}$", take)
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#add-repo", REPO)
+    page.click("#add")                                                                       # the repository is linked, and its look is kept at its first step
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None
+    page.fill("#token", TOKEN)                                                               # the token is replaced meanwhile: the look it asks for is a new one
+    page.press("#token", "Tab")
+    deadline = time.monotonic() + 6
+    while not [r for r in page.gh.requests if r["clean"] == f"/repos/{REPO}"] and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert [r for r in page.gh.requests if r["clean"] == f"/repos/{REPO}"]                   # it started at once, while the old look is still held
+    release(page, take)
+    repos(page)
+    wait(page, "(document.querySelector('#repo-grid .repo') || {textContent: ''}).textContent.includes('PR mở')")
+    context.close()
+
+
 def test_a_repository_unlinked_and_linked_again_at_once_is_not_read_by_the_old_look_as_well(browser):
     names = [f"demo/c{i}" for i in range(3)]
     histories = lambda page, name: [r for r in page.gh.requests if r["clean"].startswith(f"/repos/{name}/actions/workflows/") and r["clean"].endswith("/runs")]    # noqa: E731

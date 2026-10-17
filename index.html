@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-r2WiGnGRcfXOVM6m67c7W2xh1KOPC0qRO997/4WD2yM='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-o6+SJ7eqQFMp6c5zVECFg2ZBT7L3AbHBCQOuM2ucxQo='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -937,7 +937,11 @@ function extractCrons(text) {
     const a = /(?:^|\s)&([\w-]+)\s+(?:"([^"]*)"|'([^']*)'|([^#\s][^#]*?))\s*(?:#.*)?$/.exec(line);
     if (a) anchors.set(a[1], (a[2] !== undefined ? a[2] : a[3] !== undefined ? a[3] : a[4]).trim());
   }
-  const KEY = (key) => new RegExp("^\\s*(?:-\\s*)?(?:&\\S+\\s+)?[\"']?" + key + "[\"']?\\s*:\\s*(?:&\\S+\\s+)?(?:\"([^\"]*)\"|'([^']*)'|([^#\\s][^#]*?))\\s*(?:#.*)?$");
+  const P = "(?:[&!]\\S*\\s+)*";                                                                    // any anchors and tags in front of a node: `&a`, `!!seq`, `&a !!map`
+  const KEY = (key) => new RegExp("^\\s*(?:-\\s*)?" + P + "[\"']?" + key + "[\"']?\\s*:\\s*" + P + "(?:\"([^\"]*)\"|'([^']*)'|([^#\\s][^#]*?))\\s*(?:#.*)?$");
+  const FLOW_SCHEDULE = new RegExp("^\\s*" + P + "[\"']?schedule[\"']?\\s*:\\s*" + P + "\\[(.*)\\]\\s*(#.*)?$");
+  const BLOCK_SCHEDULE = new RegExp("^\\s*" + P + "[\"']?schedule[\"']?\\s*:\\s*(?:[&!]\\S+\\s*)*(#.*)?$");
+  const INLINE_ITEM = new RegExp("^\\s*-\\s*" + P + "\\{(.*)\\}\\s*(#.*)?$");
   const CRON_LINE = KEY("cron"), ZONE_LINE = KEY("timezone");
   const resolve = (v) => { const a = /^\*([\w-]+)$/.exec(v); return a ? (anchors.has(a[1]) ? anchors.get(a[1]) : null) : v; };       // null: an alias that points at nothing readable
   const pick = (m) => resolve((m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]).trim());
@@ -962,13 +966,13 @@ function extractCrons(text) {
         continue;
       }
       if (!onDirect) continue;                                                                         // a `schedule` key anywhere else (a matrix, an input) is not the trigger
-      const flow = /^\s*["']?schedule["']?\s*:\s*(?:&\S+\s+)?\[(.*)\]\s*(#.*)?$/.exec(line);
+      const flow = FLOW_SCHEDULE.exec(line);
       if (flow) { for (const g of flow[1].matchAll(/\{([^}]*)\}/g)) flowItem(g[1]); continue; }
-      if (/^\s*["']?schedule["']?\s*:\s*(?:[&!]\S+\s*)*(#.*)?$/.test(line)) indent = lead;
+      if (BLOCK_SCHEDULE.test(line)) indent = lead;
       continue;
     }
     if (/^\s*-/.test(line)) flush();                                                                // a new entry of the list starts: the one before is complete
-    const inline = /^\s*-\s*(?:&\S+\s+)?\{(.*)\}\s*(#.*)?$/.exec(line);
+    const inline = INLINE_ITEM.exec(line);
     if (inline) { flowItem(inline[1]); continue; }
     const c = CRON_LINE.exec(line), z = ZONE_LINE.exec(line);
     if (c) { item = item || {}; item.cron = pick(c); }
@@ -1407,7 +1411,7 @@ function buildDemo(spec, nowMs) {
 // ---- the page ----
 const $ = (id) => document.getElementById(id);
 const state = { repos: [], models: new Map(), demo: false, saved: null, office: null, realOffice: null, rate: null, interval: 60, open: new Set(), jobsCache: new Map(),
-                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), unlinks: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 }, refused: 0,
+                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), unlinks: new Map(), loading: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 }, refused: 0,
                 view: "home", theme: "neon", mode: "auto", group: "flow", filter: { repo: "", status: "", q: "", rest: "collapse" }, focus: null, chain: null, boardEdges: [], rowOpen: new Map(), calls: 0 };
 const keyOf = (repo) => repo.toLowerCase();
 
@@ -2035,9 +2039,15 @@ function inTurn(job) {
 }
 // A read waiting for a slot belongs to the token it was asked for under: when the token is replaced, the refresh that replaces it reads every repository, so a waiting read is dropped.
 // Likewise for the repository: one that was unlinked (or asked for again) while the read waited is not read by it.
+// And one read of a repository at a time: asked again while it is still waiting or running (a refresh after the repository was added), the read that is there is the answer.
 const loadOne = (repo) => {
-  const gen = state.gen, k = keyOf(repo), epoch = state.epoch.get(k) || 0;
-  return inTurn(() => (gen === state.gen && (state.epoch.get(k) || 0) === epoch ? loadNow(repo) : Promise.resolve()));
+  const gen = state.gen, k = keyOf(repo), epoch = state.epoch.get(k) || 0, open = state.loading.get(k);
+  if (open && open.gen === gen) return open.promise;
+  const entry = { gen, promise: null };
+  entry.promise = inTurn(() => (gen === state.gen && (state.epoch.get(k) || 0) === epoch ? loadNow(repo) : Promise.resolve()))
+    .finally(() => { if (state.loading.get(k) === entry) state.loading.delete(k); });
+  state.loading.set(k, entry);
+  return entry.promise;
 };
 async function loadNow(repo) {
   if (!state.repos.some((r) => sameRepo(r, repo))) return;                                        // unlinked while it waited for a slot: not one request is spent on it
@@ -2110,6 +2120,7 @@ function addRepos(names) {
 }
 function removeRepo(repo) {
   state.repos = state.repos.filter((r) => !sameRepo(r, repo));
+  state.loading.delete(keyOf(repo));                                                               // a read of it that is waiting or running is of the old link: a new one is a new read
   state.unlinks.set(keyOf(repo), (state.unlinks.get(keyOf(repo)) || 0) + 1);                     // reads of its steps that are on their way belong to a link that no longer exists
   state.epoch.set(keyOf(repo), (state.epoch.get(keyOf(repo)) || 0) + 1);                          // a look in flight is the old one even if the same repository is linked again before its new look starts
   state.models.delete(keyOf(repo));
