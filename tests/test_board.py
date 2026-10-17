@@ -253,6 +253,15 @@ def _model(**over):
     return m
 
 
+def test_a_repository_whose_workflow_list_was_not_read_is_unknown_not_empty():
+    read, unread, old = _model(workflowsRead=True), _model(workflowsRead=False), _model()
+    health = _node([["repoHealth", [m, NOW]] for m in (read, unread, old)])
+    assert [h["label"] for h in health] == ["Chưa có workflow", "Chưa đọc được workflow", "Chưa có workflow"]      # a model without the flag is read as before
+    items = _one("inboxItems", [read, unread, _model(repo="o/other", workflowsRead=False), {"repo": "o/down", "ok": False, "error": "x"}], NOW)
+    assert sorted((i["repo"], i["title"]) for i in items) == [("o/down", "Không đọc được repo"), ("o/other", "Không đọc được danh sách workflow"), ("o/r", "Không đọc được danh sách workflow")]
+    assert _one("inboxItems", [read, old], NOW) == []
+
+
 def test_agent_activity_lists_ai_runs_and_agent_or_bot_pull_requests_only():
     wf = {"id": 1, "name": "Claude Code Review", "path": ".github/workflows/claude-review.yml",
           "runs": [{"id": 9, "number": 9, "status": "queued", "branch": "claude/x", "actor": "claude[bot]", "updatedAt": "2026-10-16T10:00:00Z"},

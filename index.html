@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-b4+/64Ep2iLTuk093Pq9078K0+cMExP85L5ydrPz2gM='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-RLCRJEDnKnVBnNWFo8+SrF4J2iMEYY4vblrpfIUeoYQ='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -645,6 +645,7 @@ function sparkHistory(runs, n) {
 }
 function repoHealth(m, nowMs) {
   if (!m || !m.ok) return { tone: "neutral", label: "Không đọc được" };
+  if (m.workflowsRead === false) return { tone: "neutral", label: "Chưa đọc được workflow" };            // no list is not an empty list
   const wfs = m.workflows || [];
   if (wfs.some((w) => isFailing(w, nowMs))) return { tone: "failed", label: "Có lỗi" };
   if (wfs.some((w) => isStaleFailing(w, nowMs))) return { tone: "neutral", label: "Lỗi cũ" };
@@ -1226,6 +1227,7 @@ function inboxItems(models, nowMs) {
   for (const m of models) {
     if (!m) continue;
     if (!m.ok) { out.push({ type: "error", repo: m.repo, title: "Không đọc được repo", why: m.error || "", when: null, status: "blocked" }); continue; }
+    if (m.workflowsRead === false) out.push({ type: "error", repo: m.repo, title: "Không đọc được danh sách workflow", why: "Chưa biết repo này có task đang chạy hay lỗi nào", when: null, status: "blocked" });
     for (const wf of m.workflows || []) {
       if (wf.state && wf.state !== "active") continue;
       for (const r of wf.runs || []) if (runState(r).key === "waiting") out.push({ type: "approval", repo: m.repo, title: wf.name + " #" + r.number, why: "Chờ bạn duyệt", when: isoMs(r.updatedAt || r.startedAt), status: "needs", ref: { run: r.id } });
@@ -1305,7 +1307,7 @@ function buildDemo(spec, nowMs) {
       info: { description: r.info.description, stars: r.info.stars, private: r.info.private, archived: false, pushedAt: iso(r.info.pushedAgo), openIssues: r.info.openIssues, defaultBranch: "main" },
       workflows, active, jobs: jobsByRun,
       pulls: r.pulls.map((p) => ({ number: p.n, title: p.title, draft: p.draft, user: p.user, userType: p.type, branch: p.branch, headRepo: r.repo, updatedAt: iso(p.ago), createdAt: iso(p.ago) })),
-      pullsRead: true, agentFiles: r.agentFiles,
+      pullsRead: true, workflowsRead: true, agentFiles: r.agentFiles,
     });
   }
   return models;
@@ -1363,6 +1365,7 @@ function noteRate(headers) {
   if (Number.isFinite(remaining) && Number.isFinite(limit)) { state.rate = mergeRate(state.rate, { remaining, limit, resetMs: Number.isFinite(reset) ? reset * 1000 : null }); renderRate(); }
 }
 async function call(path, opts) {
+  if (state.demo) return { status: 0, data: null };                                              // the demo contacts nobody: a load that was under way when it began asks no more
   const raw = !!(opts && opts.raw);
   const headers = { "Accept": raw ? "application/vnd.github.raw+json" : "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
   if (token()) headers.Authorization = "Bearer " + token();
@@ -1437,7 +1440,8 @@ async function loadRepo(repo) {
   let runList = [], wfList = [], pulls = [];
   if (runsRes.status === 200 && runsRes.data && Array.isArray(runsRes.data.workflow_runs)) runList = runsRes.data.workflow_runs.map(normRun).filter(Boolean);
   else warnings.push("Không đọc được các lượt chạy: " + explain(runsRes.status, runsRes.data));
-  if (wfsRes.status === 200 && wfsRes.data && Array.isArray(wfsRes.data.workflows)) wfList = wfsRes.data.workflows.map(normWorkflow).filter(Boolean);
+  const workflowsRead = wfsRes.status === 200 && !!wfsRes.data && Array.isArray(wfsRes.data.workflows);       // a list that could not be read is not an empty list
+  if (workflowsRead) wfList = wfsRes.data.workflows.map(normWorkflow).filter(Boolean);
   else warnings.push("Không đọc được danh sách workflow: " + explain(wfsRes.status, wfsRes.data));
   if (wfsRes.more) warnings.push("Repo có thể còn workflow nữa: chỉ đọc " + wfList.length + " workflow (giới hạn " + MAX_WF_PAGES * LIST_PAGE + ").");
   if (pullsRes.status === 200 && Array.isArray(pullsRes.data)) pulls = pullsRes.data.map(normPull).filter(Boolean);
@@ -1485,7 +1489,7 @@ async function loadRepo(repo) {
     // A read that failed, or lost a page, is not the model's for good: it goes where an on-demand read goes, to be forgotten after half a minute and asked for again.
     if (gen === state.gen) state.jobsCache.set(jobKey(repo, a.run), { at: Date.now(), active: true, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0, incomplete: true });
   }));
-  return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, jobsOmitted, pulls, pullsRead, pullsMore, agentFiles };
+  return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, jobsOmitted, pulls, pullsRead, pullsMore, workflowsRead, agentFiles };
 }
 // Steps of a finished run never change, so they are kept; the steps of a run still going are only trusted for 30 seconds.
 async function loadJobs(model, run) {
@@ -1626,8 +1630,8 @@ function renderHome(all) {
   const items = [];
   for (const m of all) if (m.ok) for (const a of m.active || []) items.push({ m, a });
   items.sort((x, y) => (runState(x.a.run).key === "running" ? 0 : 1) - (runState(y.a.run).key === "running" ? 0 : 1) || (isoMs(x.a.run.createdAt) || 0) - (isoMs(y.a.run.createdAt) || 0));
-  const extra = all.reduce((n, m) => n + (m.ok ? m.activeExtra || 0 : 0), 0);
-  const body = items.length ? items.map(({ m, a }) => pipelinePanel(m, a.wf, a.run)) : [h("p", { class: "empty", text: state.repos.length ? (all.length ? "Không có task nào đang chạy hoặc đang chờ." : "Đang tải…") : "Chưa liên kết repo nào. Thêm một repo ở Cài đặt." })];
+  const extra = all.reduce((n, m) => n + (m.ok ? m.activeExtra || 0 : 0), 0), unread = all.filter((m) => m.ok && m.workflowsRead === false).length;
+  const body = items.length ? items.map(({ m, a }) => pipelinePanel(m, a.wf, a.run)) : [h("p", { class: "empty", text: state.repos.length ? (all.length ? "Không có task nào đang chạy hoặc đang chờ." + (unread ? " Nhưng " + unread + " repo chưa đọc được danh sách workflow, nên chưa chắc." : "") : "Đang tải…") : "Chưa liên kết repo nào. Thêm một repo ở Cài đặt." })];
   if (extra > 0) body.push(h("p", { class: "muted small", text: "Còn " + extra + " task nữa không hiện ở đây (mỗi repo hiện tối đa 4)." }));
   $("home-runs").replaceChildren(...body);
   const ready = readyNow(all), day = weekPlan(all, Date.now(), 1), plan = [...day.items, ...day.frequent.map((f) => ({ ms: f.next, repo: f.repo, wf: f.wf, repeating: true }))].sort((a, b) => a.ms - b.ms).slice(0, 3), need = inboxItems(all, Date.now());
@@ -1675,7 +1679,8 @@ function renderBoard(all) {
     c.nodes.map((n) => nodeButton(n, focus, state.chain, f.rest === "collapse" && (n.status === "done" || n.status === "blocked"))))) : [h("p", { class: "empty", text: "Không có mục nào khớp bộ lọc." })]));
   for (const b of $("wavegrid").querySelectorAll("button.node")) b.addEventListener("click", () => { state.focus = state.focus === b.dataset.id ? null : b.dataset.id; render(); });
   const picked = focus ? view.nodes.find((n) => n.id === focus) : null;
-  $("board-detail").replaceChildren(...(picked ? boardDetail(picked) : [h("span", { class: "muted", text: "Chọn một thẻ để thấy chuỗi liên quan." })]));
+  const unread = all.filter((m) => m.ok && m.workflowsRead === false).length;
+  $("board-detail").replaceChildren(...(picked ? boardDetail(picked) : [h("span", { class: "muted", text: "Chọn một thẻ để thấy chuỗi liên quan." + (unread ? " " + unread + " repo chưa đọc được danh sách workflow nên chưa có thẻ nào của chúng." : "") })]));
   requestAnimationFrame(drawEdges);
 }
 function boardDetail(n) {
@@ -1908,6 +1913,7 @@ async function pool(items, size, fn) {
 async function loadOne(repo) {
   const k = keyOf(repo), mine = (state.epoch.get(k) || 0) + 1;
   state.epoch.set(k, mine);
+  if (state.demo) return;                                                                         // queued behind others when the demo began: not started
   let model;
   try { model = await loadRepo(repo); } catch (e) { model = { repo, ok: false, error: "Lỗi không rõ khi đọc repo." }; }
   if (state.demo || state.epoch.get(k) !== mine || !state.repos.some((r) => sameRepo(r, repo))) return;

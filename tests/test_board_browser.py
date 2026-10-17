@@ -867,6 +867,68 @@ def test_a_pull_request_list_that_was_read_and_is_empty_gives_exact_counts(brows
     context.close()
 
 
+def test_a_repository_whose_workflow_list_could_not_be_read_is_not_shown_as_having_no_workflows(browser):
+    context, page = new_page(browser, repos=(REPO, "demo/two"))
+    page.gh.routes.update(app_routes("demo/two"))
+    page.gh.routes["/repos/demo/two/actions/workflows"] = (200, {"workflows": []})                      # read, and empty: the count must tell the two repositories apart
+    page.gh.routes[f"/repos/{REPO}/actions/workflows"] = (500, {"message": "boom"})
+    page.gh.routes[f"/repos/{REPO}/pulls"] = (200, [])                                                  # no agent pull request waiting for a look: the inbox holds the one thing
+    page.gh.routes["/repos/demo/two/pulls"] = (200, [])
+    page.goto(PAGE_URL)
+    wait(page, "document.querySelector('#home-runs .empty') !== null && document.querySelector('#home-runs .empty').textContent.includes('chưa đọc được')")
+    assert "1 repo chưa đọc được danh sách workflow" in text(page, "#home-runs")                       # not "no tasks" and nothing else
+    assert text(page, "#inbox-count") == "1"
+    open_tab(page, "inbox")
+    assert "Không đọc được danh sách workflow" in text(page, "#inbox-list") and REPO in text(page, "#inbox-list")
+    repos(page)
+    card = page.locator("#repo-grid .repo", has_text=REPO).inner_text()
+    assert "Chưa đọc được workflow" in card and "Chưa có workflow" not in card
+    assert "Chưa có workflow" in page.locator("#repo-grid .repo", has_text="demo/two").inner_text()       # the other one has none, and says so
+    open_tab(page, "board")
+    assert "1 repo chưa đọc được danh sách workflow" in text(page, "#board-detail")
+    context.close()
+
+
+def test_a_repository_whose_workflow_list_was_read_and_is_empty_says_it_has_none(browser):
+    context, page = new_page(browser)
+    page.gh.routes[f"/repos/{REPO}/actions/workflows"] = (200, {"workflows": []})
+    page.gh.routes[f"/repos/{REPO}/pulls"] = (200, [])
+    page.goto(PAGE_URL)
+    wait(page, "document.querySelector('#home-runs .empty') !== null")
+    assert text(page, "#home-runs .empty") == "Không có task nào đang chạy hoặc đang chờ." and page.locator("#inbox-count").is_hidden()
+    repos(page)
+    assert "Chưa có workflow" in text(page, "#repo-grid .repo") and "Chưa đọc được workflow" not in text(page, "#repo-grid .repo")
+    context.close()
+
+
+def test_loads_under_way_or_queued_when_the_demo_starts_ask_nothing_more(browser):
+    names = ("demo/a", "demo/b", "demo/c", "demo/d")                                                    # three are loaded at a time: the fourth waits its turn
+    context, page = new_page(browser, repos=names)
+    for name in names:
+        page.gh.routes.update(app_routes(name))
+    held = []
+    for name in names[:3]:
+        context.route(f"https://api.github.com/repos/{name}", lambda route, request: route.fulfill(status=204, headers=PREFLIGHT) if request.method == "OPTIONS" else held.append((route, request.url)))
+    page.goto(PAGE_URL)
+    deadline = time.monotonic() + 8
+    while len(held) < 3 and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert len(held) == 3                                                                               # the first look is under way: the repository itself of three is awaited
+    quiet(page)
+    open_tab(page, "settings")
+    page.click("#demo")
+    wait(page, "!document.getElementById('banner').hidden")
+    mark = len(page.gh.requests)
+    for route, url in held:
+        name = url.split("/repos/")[1]
+        route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(page.gh.routes[f"/repos/{name}"][1]))
+    page.wait_for_timeout(300)
+    quiet(page)
+    later = [r["clean"] for r in page.gh.requests[mark:]]
+    assert later == [] and not [r for r in page.gh.requests if "demo/d" in r["clean"]]                 # the answers that came late started nothing, and the fourth was never started
+    context.close()
+
+
 def a_repo(i):
     return {"full_name": f"bigowner/r{i}", "owner": {"login": "bigowner"}, "private": False, "pushed_at": iso(60)}
 
