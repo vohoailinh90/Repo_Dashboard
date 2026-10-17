@@ -845,6 +845,28 @@ def test_pull_requests_past_the_limit_are_not_counted_as_if_they_were_all_there(
     context.close()
 
 
+def test_a_pull_request_list_that_could_not_be_read_is_not_counted_as_an_empty_one(browser):
+    context, page = new_page(browser)
+    page.gh.routes[f"/repos/{REPO}/pulls"] = (500, {"message": "boom"})
+    page.goto(PAGE_URL)
+    loaded(page)
+    repos(page)
+    card = text(page, "#repo-grid .repo")
+    assert "PR mở: ?" in card and "Issue mở: ?" in card and "PR mở: 0" not in card and "Không đọc được PR" in card         # the repository says 3 open issues-and-PRs: no number can be taken from it
+    context.close()
+
+
+def test_a_pull_request_list_that_was_read_and_is_empty_gives_exact_counts(browser):
+    context, page = new_page(browser)
+    page.gh.routes[f"/repos/{REPO}/pulls"] = (200, [])
+    page.goto(PAGE_URL)
+    loaded(page)
+    repos(page)
+    card = text(page, "#repo-grid .repo")
+    assert "PR mở: 0" in card and "Issue mở: 3" in card and "PR mở: ?" not in card and "Không đọc được PR" not in card
+    context.close()
+
+
 def a_repo(i):
     return {"full_name": f"bigowner/r{i}", "owner": {"login": "bigowner"}, "private": False, "pushed_at": iso(60)}
 
@@ -1339,6 +1361,7 @@ def test_the_demo_contacts_nobody_shows_every_screen_and_leaving_it_brings_the_l
     assert text(ui, "#f-count") == "38 / 38"
     open_tab(ui, "repos")
     assert ui.locator("#repo-grid .repo").count() == 4
+    assert "PR mở: ?" not in text(ui, "#repo-grid") and "Issue mở: ?" not in text(ui, "#repo-grid")          # the demo's lists are all read: exact counts
     open_tab(ui, "agents")
     assert "REQ-031" in text(ui, "#office-body")
     open_tab(ui, "settings")

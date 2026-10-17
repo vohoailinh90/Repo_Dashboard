@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KJ0p9UDSWJmOuwHxTC+siLKcTDV2S23o+v5t7O78rNk='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-mB6uKCkh0PvXj2PSymgsDhmf/MRF4zJDEfa8i+Mlsns='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1289,7 +1289,7 @@ function buildDemo(spec, nowMs) {
       info: { description: r.info.description, stars: r.info.stars, private: r.info.private, archived: false, pushedAt: iso(r.info.pushedAgo), openIssues: r.info.openIssues, defaultBranch: "main" },
       workflows, active, jobs: jobsByRun,
       pulls: r.pulls.map((p) => ({ number: p.n, title: p.title, draft: p.draft, user: p.user, userType: p.type, branch: p.branch, headRepo: r.repo, updatedAt: iso(p.ago), createdAt: iso(p.ago) })),
-      agentFiles: r.agentFiles,
+      pullsRead: true, agentFiles: r.agentFiles,
     });
   }
   return models;
@@ -1426,7 +1426,7 @@ async function loadRepo(repo) {
   if (wfsRes.more) warnings.push("Repo có thể còn workflow nữa: chỉ đọc " + wfList.length + " workflow (giới hạn " + MAX_WF_PAGES * LIST_PAGE + ").");
   if (pullsRes.status === 200 && Array.isArray(pullsRes.data)) pulls = pullsRes.data.map(normPull).filter(Boolean);
   else warnings.push("Không đọc được PR: " + explain(pullsRes.status, pullsRes.data));
-  const pullsMore = !!pullsRes.more;
+  const pullsRead = pullsRes.status === 200 && Array.isArray(pullsRes.data), pullsMore = !!pullsRes.more;                  // a list that could not be read is not an empty list
   if (pullsMore) warnings.push("Repo có thể còn PR mở nữa: chỉ đọc " + pulls.length + " PR mới nhất (giới hạn " + MAX_PULL_PAGES * LIST_PAGE + ").");
   const workflows = wfList.map((w) => Object.assign({ crons: [], dispatch: false, runs: runList.filter((r) => r.wfId === w.id) }, w));
   const sources = workflows.filter((w) => w.state === "active" && safeWorkflowPath(w.path)), readable = sources.slice(0, FILES_MAX);
@@ -1469,7 +1469,7 @@ async function loadRepo(repo) {
     // A read that failed, or lost a page, is not the model's for good: it goes where an on-demand read goes, to be forgotten after half a minute and asked for again.
     if (gen === state.gen) state.jobsCache.set(jobKey(repo, a.run), { at: Date.now(), active: true, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0, incomplete: true });
   }));
-  return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, jobsOmitted, pulls, pullsMore, agentFiles };
+  return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, jobsOmitted, pulls, pullsRead, pullsMore, agentFiles };
 }
 // Steps of a finished run never change, so they are kept; the steps of a run still going are only trusted for 30 seconds.
 async function loadJobs(model, run) {
@@ -1735,7 +1735,7 @@ function repoCard(repo) {
         h("span", { class: "sp" }), remove),
       m.info.description ? h("p", { class: "desc", text: m.info.description }) : null,
       h("div", { class: "agentline" }, badge({ tone: health.tone, label: health.label, key: "" }), running ? badge({ tone: "info", label: running + " đang chạy", key: "running" }) : null),
-      h("div", { class: "stats" }, h("span", { text: "★ " + fmtN(m.info.stars) }), h("span", { text: "PR mở: " + m.pulls.length + (m.pullsMore ? "+" : "") }), h("span", { text: "Issue mở: " + (m.pullsMore ? "?" : issues) }),
+      h("div", { class: "stats" }, h("span", { text: "★ " + fmtN(m.info.stars) }), h("span", { text: "PR mở: " + (m.pullsRead ? m.pulls.length + (m.pullsMore ? "+" : "") : "?") }), h("span", { text: "Issue mở: " + (m.pullsRead && !m.pullsMore ? issues : "?") }),
         m.info.pushedAt ? h("span", { text: "push " + agoText(m.info.pushedAt) }) : null),
       (m.warnings || []).map((w) => h("p", { class: "small bad", text: w })),
       wfs.length ? h("ul", { class: "wfs" }, wfs.slice(0, 6).map((w) => workflowRow(m, w))) : h("p", { class: "small muted", text: "Repo chưa có workflow GitHub Actions." }),
