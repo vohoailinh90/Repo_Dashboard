@@ -1632,6 +1632,75 @@ def test_a_queued_read_of_a_repository_unlinked_and_linked_again_starts_once(bro
     context.close()
 
 
+def test_a_late_answer_of_an_obsolete_look_does_not_overwrite_a_newer_cached_file(browser):
+    nightly = f"/repos/{REPO}/contents/.github/workflows/nightly.yml"
+    v1, v2 = "on:\n  schedule:\n    - cron: '0 5 * * *'\n", "on:\n  schedule:\n    - cron: '0 6 * * *'\n"
+    context, page = new_page(browser)
+    page.gh.routes[nightly] = (200, v1)
+    take = {"route": None}
+
+    def hold(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        if take["route"] is None:
+            take["route"] = route                                                            # the first read of the file, by the first look, is kept back
+            return None
+        return route.fallback()
+
+    context.route(f"https://api.github.com{nightly}", hold)
+    page.goto(PAGE_URL)
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None
+    page.gh.routes[nightly] = (200, v2)                                                      # the file changed meanwhile
+    open_tab(page, "settings")
+
+    def link_again():
+        page.click(f'[data-remove="{REPO}"]')
+        page.fill("#add-repo", REPO)
+        page.click("#add")
+        open_tab(page, "home")
+        loaded(page)
+        quiet(page)
+
+    link_again()                                                                             # the second look reads the new file and keeps it
+    take["route"].fulfill(status=200, headers=CORS, content_type="text/plain", body=v1)      # and then the answer the first look was waiting for arrives
+    quiet(page)
+    open_tab(page, "settings")
+    link_again()                                                                             # a third look is served from what was kept
+    open_tab(page, "schedule")
+    plan = text(page, "#view-schedule")
+    assert "13:00" in plan and "12:00" not in plan                                           # 06:00 UTC, not 05:00 UTC
+    context.close()
+
+
+def test_the_pages_of_the_jobs_of_a_row_read_across_an_unlink_and_a_link_are_not_asked_for(browser):
+    context, page = new_page(browser)
+    page.gh.routes = many_jobs()
+    page.goto(PAGE_URL)
+    loaded(page)
+    quiet(page)
+    take = {"route": None}
+    hold_first(context, rf"https://api\.github\.com/repos/{REPO}/actions/runs/90/jobs", take)
+    repos(page)
+    page.locator("details.wf", has_text="Nightly").locator(":scope > summary").click()
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None
+    open_tab(page, "settings")
+    page.locator(f'[data-remove="{REPO}"]:visible').click()                                  # unlinked and linked again while the first page of the steps is on its way
+    page.fill("#add-repo", REPO)
+    page.click("#add")
+    open_tab(page, "home")
+    loaded(page)
+    before = quiet(page)
+    release(page, take)
+    assert quiet(page) == before                                                             # the read of the old link asks for no further page
+    context.close()
+
+
 def test_a_repository_unlinked_and_linked_again_at_once_is_not_read_by_the_old_look_as_well(browser):
     names = [f"demo/c{i}" for i in range(3)]
     histories = lambda page, name: [r for r in page.gh.requests if r["clean"].startswith(f"/repos/{name}/actions/workflows/") and r["clean"].endswith("/runs")]    # noqa: E731

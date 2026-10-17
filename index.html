@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2sqblm5H04BrM+Lny0XmfBO00Tt7FWjcH7FXGOVlPdU='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-5DLU0fG5uRyRFG2R0amHpgz5Q4/pecK14+w9d0xpSzs='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1407,7 +1407,7 @@ function buildDemo(spec, nowMs) {
 // ---- the page ----
 const $ = (id) => document.getElementById(id);
 const state = { repos: [], models: new Map(), demo: false, saved: null, office: null, realOffice: null, rate: null, interval: 60, open: new Set(), jobsCache: new Map(),
-                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 }, refused: 0,
+                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), unlinks: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 }, refused: 0,
                 view: "home", theme: "neon", mode: "auto", group: "flow", filter: { repo: "", status: "", q: "", rest: "collapse" }, focus: null, chain: null, boardEdges: [], rowOpen: new Map(), calls: 0 };
 const keyOf = (repo) => repo.toLowerCase();
 
@@ -1489,8 +1489,9 @@ async function call(path, opts) {
 async function cached(name, ttlMs, fn) {
   const hit = state.files.get(name), gen = state.gen;
   if (hit && Date.now() - hit.at < ttlMs) return hit.value;
-  const value = await fn();
-  if ((value.status === 200 || value.status === 404) && gen === state.gen) state.files.set(name, { at: Date.now(), value });
+  const sentAt = Date.now(), value = await fn();
+  const kept = state.files.get(name);                                                                   // an answer to a request sent before the one whose answer is kept does not replace it, however late it arrives
+  if ((value.status === 200 || value.status === 404) && gen === state.gen && !(kept && kept.sentAt > sentAt)) state.files.set(name, { at: Date.now(), sentAt, value });
   return value;
 }
 function explain(status, data) {
@@ -1604,7 +1605,8 @@ async function loadJobs(model, run) {
   const k = jobKey(model.repo, run);
   if (jobsOf(model, run) !== undefined || state.loadingJobs.has(k) || state.demo) return;
   state.loadingJobs.add(k);
-  const gen = state.gen, stale = () => gen !== state.gen || !state.repos.some((r) => sameRepo(r, model.repo));      // the token was replaced, or the repository unlinked
+  const gen = state.gen, rk = keyOf(model.repo), links = state.unlinks.get(rk) || 0;
+  const stale = () => gen !== state.gen || (state.unlinks.get(rk) || 0) !== links || !state.repos.some((r) => sameRepo(r, model.repo));      // the token was replaced, or the repository unlinked (and perhaps linked again)
   const got = await readJobs("/repos/" + model.repo + "/actions/runs/" + run.id + "/jobs", stale);
   state.loadingJobs.delete(k);
   if (stale()) return;
@@ -2108,6 +2110,7 @@ function addRepos(names) {
 }
 function removeRepo(repo) {
   state.repos = state.repos.filter((r) => !sameRepo(r, repo));
+  state.unlinks.set(keyOf(repo), (state.unlinks.get(keyOf(repo)) || 0) + 1);                     // reads of its steps that are on their way belong to a link that no longer exists
   state.epoch.set(keyOf(repo), (state.epoch.get(keyOf(repo)) || 0) + 1);                          // a look in flight is the old one even if the same repository is linked again before its new look starts
   state.models.delete(keyOf(repo));
   saveStore(); render();
