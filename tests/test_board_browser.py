@@ -1289,6 +1289,78 @@ def test_after_a_secondary_rate_limit_the_page_waits_as_long_as_github_asks_and_
     context.close()
 
 
+def test_a_retry_after_of_more_than_an_hour_is_waited_in_full(browser):
+    context, page = new_page(browser, interval=0)                                            # no timer asks again: only the person does, and only the end of the wait repaints the indicator
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('connect-msg').className.includes('ok')")
+    quiet(page)
+    good = page.gh.routes
+    page.gh.routes = {**good, f"/repos/{REPO}/actions/runs": (403, SECONDARY)}
+    page.gh.extra = {"retry-after": "7200"}                                                  # two hours: GitHub says not to ask before then
+    page.click("#refresh")
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    seen = quiet(page)
+    page.gh.routes, page.gh.extra = good, {}
+    page.clock.run_for(3_700_000)                                                            # past the hour a shorter limit would have been cut to
+    page.wait_for_timeout(400)
+    assert text(page, "#live-text") == "tạm dừng"                                            # still waiting, and saying so
+    page.click("#refresh")
+    page.wait_for_timeout(400)
+    assert len(page.gh.requests) == seen                                                     # and the person asking again sends nothing
+    page.clock.run_for(3_600_000)                                                            # past the two hours
+    wait(page, "document.getElementById('live-text').textContent === 'thủ công'")            # the indicator was repainted when the wait ended, with nothing else to do it
+    page.click("#refresh")
+    deadline = time.monotonic() + 6
+    while len(page.gh.requests) == seen and time.monotonic() < deadline:
+        page.wait_for_timeout(100)
+    assert len(page.gh.requests) > seen
+    context.close()
+
+
+def test_a_repository_unlinked_while_it_waits_for_a_slot_is_never_read(browser):
+    names = [f"demo/b{i}" for i in range(6)]
+    context, page = new_page(browser, repos=())
+    for name in names:
+        page.gh.routes.update(app_routes(name))
+    held, asked = [], []
+
+    def hold(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        asked.append(request.url)
+        held.append((route, request.url))
+
+    for name in names:
+        context.route(f"https://api.github.com/repos/{name}", hold)
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.click("details.io summary")
+    page.fill("#io", "\n".join(names))
+    page.click("#import")
+    deadline = time.monotonic() + 6
+    while len(held) < 3 and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    page.wait_for_timeout(300)
+    assert len(held) == 3                                                                    # b0 to b2 have the slots; b3 to b5 wait
+    page.click('[data-remove="demo/b4"]')                                                    # one of the waiting ones is unlinked
+    for _ in range(8):
+        batch = list(held)
+        held.clear()
+        for route, url in batch:
+            route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(page.gh.routes[f"/repos/{url.split('/repos/')[1]}"][1]))
+        page.wait_for_timeout(400)
+        if not held:
+            break
+    open_tab(page, "repos")
+    wait(page, "[...document.querySelectorAll('#repo-grid .repo')].filter((e) => e.textContent.includes('PR mở')).length === 5")
+    assert not [u for u in asked if u.endswith("/demo/b4")] and not [p for p in page.gh.paths() if "/demo/b4" in p]       # not one request was spent on it
+    context.close()
+
+
 def test_a_look_at_many_repositories_stops_starting_new_ones_once_github_asks_to_wait(browser):
     names = [f"demo/r{i}" for i in range(6)]
     context, page = new_page(browser, repos=names)

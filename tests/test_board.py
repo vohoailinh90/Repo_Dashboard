@@ -407,7 +407,7 @@ def test_a_secondary_rate_limit_is_told_from_the_hourly_count_and_from_a_refusal
              ((429, None, "4000", "", 0), 60000), ((403, None, "4000", "Abuse detection mechanism", 0), 60000),
              ((403, None, "0", "API rate limit exceeded", 0), 0), ((403, "60", "0", "x", 0), 0),                       # the hourly count ran out: its reset time governs
              ((403, None, "4000", "Resource not accessible by personal access token", 0), 0), ((403, None, "4000", "Must have admin rights", 0), 0),
-             ((404, "30", "4000", "", 0), 0), ((200, "30", "4000", "", 0), 0), ((403, "0", "100", "", 0), 0), ((403, "99999", "100", "", 0), 3600000),
+             ((404, "30", "4000", "", 0), 0), ((200, "30", "4000", "", 0), 0), ((403, "0", "100", "", 0), 0), ((403, "99999", "100", "", 0), 99999000), ((429, "7200", "4000", "", 0), 7200000), ((429, "99999999999", "4000", "", 0), 2147000000),     # the whole of it, up to what a timer can hold
              ((429, "10", None, "", 0), 10000), ((403, "abc", "100", "", 0), 0), ((403, "", "100", "secondary rate limit", 0), 60000)]
     assert _node([["coolOff", list(args)] for args, _ in cases]) == [expected for _, expected in cases]
 
@@ -1024,6 +1024,25 @@ def test_an_escaped_quote_does_not_end_a_double_quoted_scalar_in_a_flow_collecti
     crons = [(f"on: {{push: {{paths: [\"a{esc}{{\"]}}, schedule: [{schedule}]}}}}\n", ["0 5 * * *"]), (f"on: {{schedule: [{{name: \"a{esc}]b\", cron: '0 5 * * *'}}, {{cron: '0 6 * * *'}}]}}\n", ["0 5 * * *", "0 6 * * *"]),
              (f"on:\n  push:\n    paths: [\"a{esc}[\",\n      \"b\"]\n  schedule: [\n    {{cron: '0 7 * * *'}}\n  ]\n", ["0 7 * * *"])]
     assert _node([["extractCrons", [t]] for t, _ in crons]) == [expected for _, expected in crons]
+
+
+def test_an_apostrophe_inside_a_plain_scalar_does_not_open_a_quote():
+    assert _node([["flowTop", ["{push: {branches: [don't]}, workflow_dispatch: {}}"]], ["flowTop", ["[don't, c]"]], ["flowTop", ["{a: &x \"y}\", b: !!str 'z]', c: 1}"]]]) == [["push", "workflow_dispatch"], ["don't", "c"], ["a", "b", "c"]]
+    assert _node([["flowDepth", ["[don't, x]", 0]], ["flowDepth", ["[&a \"x]\", ", 0]], ["flowDepth", ["[a, 'b]', ", 0]]]) == [0, 1, 1]
+    assert _node([["flowStart", ["- don't: [a]"]], ["flowStart", ["k: &a 'x[' "]], ["flowStart", ["k: 'don''t': [a]"]]]) == [9, -1, 13]
+    schedule = "{cron: '0 5 * * *'}"
+    assert _node([["flowSequenceOf", ["{push: {branches: [don't]}, schedule: [" + schedule + "]}", "schedule"]], ["innerOf", ["[{name: don't}, {cron: x}]", 0]]]) == [schedule, "{name: don't}, {cron: x}"]
+    assert _node([["stripComment", [t]] for t in ("x: don't # c", 'x: &a "q # r" # c', "x: !!str 'q # r' # c", "a-'b # c", "- 'a # b' # c")]) == ["x: don't ", 'x: &a "q # r" ', "x: !!str 'q # r' ", "a-'b ", "- 'a # b' "]
+    flows = [("on: {push: {branches: [don't]}, workflow_dispatch: {}}\n", True), ("on: {push: {branches: [don't]}}\n", False), ("on: {push: {branches: [it's, 'x']}, workflow_dispatch: {}}\n", True),
+             ("on:\n  push:\n    branches: [don't,\n      main]\n  workflow_dispatch:\n", True), ("on: [push, don't, workflow_dispatch]\n", True)]
+    assert _node([["hasDispatch", [t]] for t, _ in flows]) == [expected for _, expected in flows]
+    crons = [("on: {push: {branches: [don't]}, schedule: [" + schedule + "]}\n", ["0 5 * * *"]), ("on:\n  push:\n    branches: [don't,\n      main]\n  schedule: [\n    " + schedule + "\n  ]\n", ["0 5 * * *"])]
+    assert _node([["extractCrons", [t]] for t, _ in crons]) == [expected for _, expected in crons]
+
+
+def test_a_quoted_scalar_is_skipped_whole_wherever_it_starts():
+    assert _node([["stripComment", ['"a # b": 1 # c']], ["stripComment", ["'a # b' # c"]]]) == ['"a # b": 1 ', "'a # b' "]               # at the start of the line
+    assert _node([["flowStart", ['"k[": [a]']], ["flowStart", ['k: "see: [x]"']], ["flowStart", ["k: 'see: {x}'"]], ["flowStart", ["k: [a]"]]]) == [6, -1, -1, 3]
 
 
 def test_the_same_trigger_of_a_workflow_that_is_on_and_one_that_is_off_is_two_nodes():

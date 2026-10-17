@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-7T1yl7GR6sQOMefB9i/8c2uJ2z2iPEzfzTKfflis1zg='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-707euUMpT/wa4TpiSy61XKNGlcF38Of6wIVwimB3s58='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -809,19 +809,35 @@ function cronLabel(expr) {                                                      
 }
 // The lines of a workflow file that are YAML (not blank, not a comment, not the body of a block scalar such as `run: |`), each with where it stands: `onTop` for the
 // top-level `on:` line itself, `onDirect` for a line that is a direct child of `on` (the first line under it fixes how its keys are indented).
-// The text of a YAML line without its comment. A `#` starts a comment at the start of the line or after a space, unless it is inside a quoted value. A quote opens only where a value
-// starts (after `:`, `-`, `,`, `[`, `{`, `?` or at the start of the line), so the apostrophe of `it's` is none; `\"` and `''` inside a quoted value do not close it.
+// A quote opens a quoted scalar only where a value can start: at the start of the text, after `:`, `,`, `[` or `{`, after a `-` or `?` that stands alone, or after an anchor or a tag
+// (`&a "x"`, `!!str 'x'`). The apostrophe of `don't` in a plain scalar opens nothing.
+function quoteOpens(text, i) {
+  let j = i - 1;
+  while (j >= 0 && /\s/.test(text[j])) j--;
+  if (j < 0) return true;
+  const c = text[j];
+  if (c === ":" || c === "," || c === "[" || c === "{") return true;
+  if ((c === "-" || c === "?") && (j === 0 || /[\s,\[{]/.test(text[j - 1]))) return true;
+  let k = j;
+  while (k >= 0 && !/[\s,\[\]{}]/.test(text[k])) k--;
+  return text[k + 1] === "&" || text[k + 1] === "!";
+}
+// Where the quoted scalar that opens at text[i] ends: the index after its closing quote, or the length of the text when it is not closed. A backslash escapes the next character
+// in double quotes, and `''` is an apostrophe in single quotes: neither closes the scalar. Every scanner below skips a quoted scalar with these two, so they agree on what is quoted.
+function skipQuoted(text, i) {
+  const q = text[i];
+  for (let j = i + 1; j < text.length; j++) {
+    if (q === '"' && text[j] === "\\") j++;
+    else if (text[j] === q) { if (q === "'" && text[j + 1] === "'") j++; else return j + 1; }
+  }
+  return text.length;
+}
+const isQuote = (text, i) => (text[i] === '"' || text[i] === "'") && quoteOpens(text, i);
+// The text of a YAML line without its comment. A `#` starts a comment at the start of the line or after a space, unless it is inside a quoted value (see `quoteOpens`, `skipQuoted`).
 function stripComment(line) {
-  let quote = "";
   for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (quote) {
-      if (quote === '"' && ch === "\\") i++;
-      else if (ch === quote) { if (quote === "'" && line[i + 1] === "'") i++; else quote = ""; }
-      continue;
-    }
-    if (ch === '"' || ch === "'") { const before = line.slice(0, i).trimEnd(); if (before === "" || /[:\-,\[{?]$/.test(before)) quote = ch; continue; }
-    if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i);
+    if (isQuote(line, i)) { i = skipQuoted(line, i) - 1; continue; }
+    if (line[i] === "#" && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i);
   }
   return line;
 }
@@ -829,11 +845,9 @@ function stripComment(line) {
 // `{cron: '0 2 * * *'}` and `]` read like the same thing on one line. One that is not closed within FLOW_LINES lines is left as it is, and the file is not swallowed.
 const FLOW_LINES = 60;
 function flowStart(code) {                                                                         // where a flow collection opens a value on this line (after `key:`, `-` or an anchor), or -1
-  let quote = "";
   for (let i = 0; i < code.length; i++) {
     const ch = code[i];
-    if (quote) { if (quote === '"' && ch === "\\") i++; else if (ch === quote) quote = ""; continue; }
-    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (isQuote(code, i)) { i = skipQuoted(code, i) - 1; continue; }
     if (ch === "[" || ch === "{") {
       const before = code.slice(0, i).replace(/(?:[&!]\S+\s*)+$/, "").trimEnd();
       return before === "" || before.endsWith(":") || before.endsWith("-") ? i : -1;
@@ -842,11 +856,9 @@ function flowStart(code) {                                                      
   return -1;
 }
 function flowDepth(code, depth) {                                                                  // the nesting depth after this text; brackets inside quotes are not counted
-  let quote = "";
   for (let i = 0; i < code.length; i++) {
     const ch = code[i];
-    if (quote) { if (quote === '"' && ch === "\\") i++; else if (ch === quote) quote = ""; continue; }
-    if (ch === '"' || ch === "'") quote = ch;
+    if (isQuote(code, i)) i = skipQuoted(code, i) - 1;
     else if (ch === "[" || ch === "{") depth++;
     else if (ch === "]" || ch === "}") depth--;
   }
@@ -888,16 +900,15 @@ function flowSequenceOf(text, key) {
   const t = String(text).trim();
   if (t[0] !== "{") return null;
   const open = new RegExp("^\\s*[\"']?" + key + "[\"']?\\s*:\\s*\\[");
-  let depth = 0, quote = "", fresh = false;
+  let depth = 0, fresh = false;
   for (let i = 0; i < t.length; i++) {
     const ch = t[i];
-    if (quote) { if (quote === '"' && ch === "\\") i++; else if (ch === quote) quote = ""; continue; }
     if (fresh && depth === 1) {
       const m = open.exec(t.slice(i));
       if (m) return innerOf(t, i + m[0].length - 1);
       fresh = false;
     }
-    if (ch === '"' || ch === "'") quote = ch;
+    if (isQuote(t, i)) i = skipQuoted(t, i) - 1;
     else if (ch === "{" || ch === "[") { depth++; if (depth === 1) fresh = true; }
     else if (ch === "}" || ch === "]") depth--;
     else if (ch === "," && depth === 1) fresh = true;
@@ -905,11 +916,10 @@ function flowSequenceOf(text, key) {
   return null;
 }
 function innerOf(t, open) {                                                                          // what is between the bracket at `open` and its partner
-  let depth = 0, quote = "";
+  let depth = 0;
   for (let i = open; i < t.length; i++) {
     const ch = t[i];
-    if (quote) { if (quote === '"' && ch === "\\") i++; else if (ch === quote) quote = ""; continue; }
-    if (ch === '"' || ch === "'") quote = ch;
+    if (isQuote(t, i)) i = skipQuoted(t, i) - 1;
     else if (ch === "[" || ch === "{") depth++;
     else if (ch === "]" || ch === "}") { depth--; if (depth === 0) return t.slice(open + 1, i); }
   }
@@ -971,12 +981,11 @@ function flowTop(text) {
   const t = String(text).trim(), open = t[0];
   if (open !== "{" && open !== "[") return null;
   const items = [];
-  let depth = 0, quote = "", cur = "", keyDone = false, closed = false;
+  let depth = 0, cur = "", keyDone = false, closed = false;
   const end = () => { const s = cur.trim(); if (s) items.push(s); cur = ""; keyDone = false; };
   for (let i = 1; i < t.length && !closed; i++) {
     const ch = t[i];
-    if (quote) { if (quote === '"' && ch === "\\") { if (depth === 0 && !keyDone) cur += ch + (t[i + 1] || ""); i++; } else if (ch === quote) quote = ""; else if (depth === 0 && !keyDone) cur += ch; continue; }
-    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (isQuote(t, i)) { const to = skipQuoted(t, i); if (depth === 0 && !keyDone) cur += t.slice(i + 1, to - 1); i = to - 1; continue; }
     if (ch === "{" || ch === "[") { depth++; continue; }
     if (ch === "}" || ch === "]") { if (depth === 0) { end(); closed = true; } else depth--; continue; }
     if (ch === "," && depth === 0) { end(); continue; }
@@ -1007,13 +1016,14 @@ function mergeRate(cur, next) {
   if (next.resetMs > cur.resetMs) return next;
   return { remaining: Math.min(cur.remaining, next.remaining), limit: next.limit, resetMs: next.resetMs };
 }
-// A secondary rate limit is a 403 or 429 that is not the running out of the hourly count. GitHub asks to wait `retry-after` seconds; without that header, at least a minute, and
-// longer each time it happens again. Milliseconds to wait, 0 when the answer is not one.
+// A secondary rate limit is a 403 or 429 that is not the running out of the hourly count. GitHub asks to wait `retry-after` seconds, all of them (up to what a timer can hold, about
+// 24 days: a longer one is a page left open for weeks); without that header, at least a minute, and longer each time it happens again. Milliseconds to wait, 0 when the answer is not one.
+const MAX_WAIT_MS = 2147000000;
 function coolOff(status, retryAfter, remaining, message, hits) {
   if (status !== 403 && status !== 429) return 0;
   if (remaining !== null && remaining !== undefined && remaining !== "" && Number(remaining) === 0) return 0;      // the hourly count ran out: the quota's own reset time governs
   const secs = retryAfter === null || retryAfter === undefined || retryAfter === "" ? NaN : Number(retryAfter);
-  if (Number.isFinite(secs) && secs >= 0) return Math.min(secs, 3600) * 1000;
+  if (Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1000, MAX_WAIT_MS);
   if (status === 429 || /secondary rate limit|abuse detection/i.test(String(message == null ? "" : message))) return Math.min(60000 * 2 ** Math.max(0, hits || 0), 900000);
   return 0;
 }
@@ -1467,7 +1477,7 @@ async function call(path, opts) {
   const wait = coolOff(res.status, res.headers.get("retry-after"), res.headers.get("x-ratelimit-remaining"), data && data.message, state.cool.hits);
   if (gen === state.gen && (wait > 0 || ((res.status === 403 || res.status === 429) && res.headers.get("x-ratelimit-remaining") === "0"))) state.refused++;       // the answer that began a wait is a request the look lost too
   if (gen === state.gen) {
-    if (wait > 0) { state.cool.until = Math.max(state.cool.until, Date.now() + wait); state.cool.hits++; renderRate(); setTimeout(renderRate, Math.min(wait, 3600000) + 100); }
+    if (wait > 0) { state.cool.until = Math.max(state.cool.until, Date.now() + wait); state.cool.hits++; renderRate(); setTimeout(renderRate, wait + 100); }
     else if (res.status < 400) good();
   }
   return { status: res.status, data };
@@ -2011,6 +2021,7 @@ function inTurn(job) {
 }
 const loadOne = (repo) => inTurn(() => loadNow(repo));
 async function loadNow(repo) {
+  if (!state.repos.some((r) => sameRepo(r, repo))) return;                                        // unlinked while it waited for a slot: not one request is spent on it
   const k = keyOf(repo), mine = (state.epoch.get(k) || 0) + 1;
   state.epoch.set(k, mine);
   if (state.demo) return;                                                                         // queued behind others when the demo began: not started
