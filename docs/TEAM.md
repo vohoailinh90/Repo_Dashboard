@@ -9,9 +9,9 @@ Hai team dùng chung worker miễn phí (tester, coder, reviewer); khác nhau �
 |---|---|
 | Nhánh gốc | `main` |
 | Mức nhạy cảm | `public` |
-| Stack phát hiện | none |
-| Lệnh cài cho gates (có mạng) | không có (không cần cài gì) |
-| Lệnh kiểm gợi ý | chưa phát hiện được |
+| Stack phát hiện | python |
+| Lệnh cài cho gates (có mạng) | `python3 -m venv --system-site-packages .venv && .venv/bin/pip install -q -r requirements-dev.txt` |
+| Lệnh kiểm gợi ý | `.venv/bin/python scripts/sync_csp.py --check`, `.venv/bin/python -m pytest -q` |
 
 Các giá trị này nằm trong `repos.conf` trên VPS, không nằm trong repo này (worker ghi được vào repo, nên cấu hình chạy lệnh
 có mạng không được đặt ở đây). Muốn đổi thì sửa ở VPS.
@@ -27,15 +27,16 @@ nano /srv/team/work/F12/request.md                 # viết yêu cầu, tiếng 
 Mẫu `acceptance.md` (mỗi dòng phải thoát 0; trước khi code, tester phải làm chúng FAIL):
 
 ```bash
-# TODO: lệnh kiểm tra của feature
+.venv/bin/python scripts/sync_csp.py --check
+.venv/bin/python -m pytest -q
 ```
 
 ## Quy trình PR: Claude tự tạo PR, tự merge khi Codex và CI đều xanh
 
 1. Khi công việc trong repo này sẵn sàng ship, Claude tự mở PR, không chờ ai yêu cầu, trừ khi người dùng chỉ yêu cầu một thay đổi cục bộ hoặc quy tắc riêng của repo nói PR chỉ được mở khi có yêu cầu.
 2. Ngay khi PR mở, yêu cầu Codex review bằng đúng một bình luận trên PR: `@codex review` (thêm `@codex security review` khi quy tắc của repo hoặc chính thay đổi đòi hỏi: xác thực, phân quyền, bí mật, thanh toán, dữ liệu cá nhân). Codex không tự review. Mỗi head commit chỉ yêu cầu một lần cho mỗi lệnh review, không yêu cầu khi chưa có phản hồi, và không nhắc Codex trong mô tả PR hay commit message. Nếu repo có `scripts/codex_round_count.py` thì chạy nó trước mỗi lần yêu cầu.
-3. Kiểm từng finding với code. Đúng: sửa kèm test hồi quy, push, rồi yêu cầu review lại trên head mới. Sai: trả lời trên thread kèm bằng chứng. Không giới hạn số vòng; P2/P3 đã bác bỏ có bằng chứng thì không chặn; P0/P1 không dàn xếp được thì báo chủ repo và không merge.
-4. Tự merge, không chờ ai duyệt, khi cả bốn điều kiện cùng đúng trên head hiện tại: mọi review đã yêu cầu cho đúng commit đó không còn finding (một 👍 trơn không phải review, trừ khi quy tắc riêng của repo chấp nhận nó cho đúng lời gọi đó), CI xanh, không có conflict, và branch protection (hoặc merge queue) của nhánh gốc yêu cầu "up to date" và áp dụng cả với admin. Ngay trước khi merge, đọc lại head của PR và của nhánh gốc: PR đổi head thì review lại; nhánh gốc đổi thì merge nó vào và kiểm lại. Merge gắn với head SHA đã kiểm. Thiếu protection đó thì không merge: để PR mở, ghi rõ nó sạch và vì sao chưa merge, báo chủ repo.
+3. Kiểm từng finding với code. Đúng: sửa, kèm test hồi quy khi lỗi có hành vi kiểm thử được (sửa chỉ là văn bản thì dùng các check thông thường của repo), push, rồi yêu cầu review lại trên head mới. Sai: trả lời trên thread kèm bằng chứng. Không giới hạn số vòng; P2/P3 đã bác bỏ có bằng chứng thì không chặn; P0/P1 không dàn xếp được thì báo chủ repo và không merge.
+4. Tự merge, không chờ ai duyệt, khi cả bốn điều kiện cùng đúng trên head hiện tại: mọi review mà thay đổi này đòi hỏi (review thường, thêm security review khi đụng xác thực, phân quyền, bí mật, thanh toán, dữ liệu cá nhân) đã được yêu cầu cho đúng commit đó và không còn finding (một 👍 trơn không phải review, trừ khi quy tắc riêng của repo chấp nhận nó cho đúng lời gọi đó), CI xanh, không có conflict, và branch protection (hoặc merge queue) của nhánh gốc yêu cầu "up to date" và áp dụng cả với admin, và danh tính đang merge không có đường bỏ qua nó (danh sách bypass của ruleset, role tùy chỉnh, quyền của app). Ngay trước khi merge, đọc lại head của PR và của nhánh gốc: PR đổi head thì review lại; nhánh gốc đổi thì merge nó vào và kiểm lại. Merge gắn với head SHA đã kiểm. Thiếu protection đó thì không merge: để PR mở, ghi rõ nó sạch và vì sao chưa merge, báo chủ repo.
 5. Codex không phản hồi sau 10 phút: thử lại đúng một lần cho mỗi head; thông báo lỗi hoặc hết hạn mức thì không cần chờ trước lần thử lại đó. Nếu Codex đã nhận nhưng không trả review, hoặc task của nó lỗi, không thử lại: PR là BLOCKED. PR cũng BLOCKED khi lần thử lại không có phản hồi. PR BLOCKED để mở và báo một lần; không merge khi chưa được review và không dùng đường khác (API, CLI, Action) để lấy review.
 
 Mở PR và các bước trên là việc của Claude; `team push` chỉ đẩy nhánh `team/ID` (hoặc `team-codex/ID`).
@@ -44,4 +45,8 @@ Nếu chính repo này đã ghi quy tắc riêng cho một bước ở trên (ai
 
 ## Ghi chú riêng của repo này
 
-- no recognised toolchain: documentation or static content; acceptance commands are plain shell checks
+- Exception in this repository (replaces the matching rule above): index.html is the whole app, and its Content-Security-Policy allows exactly one `<script>` and one `<style>` block, by hash: a change to either runs `python3 scripts/sync_csp.py` and commits the rewritten hashes in the same commit, or the browser refuses to run the page (README, development section).
+- Exception in this repository (replaces the matching rule above): The page is read-only and keeps the token in page memory only: it sends nothing but GET to api.github.com, and localStorage holds repository names and display settings, never the token. A change keeps both, adds no other host, CDN, font, image or inline handler, never loosens the CSP and keeps the refusal to take a token on `*.github.io`; a change to the token handling, the request layer or the CSP also needs `@codex security review` (secrets).
+- Exception in this repository (replaces the matching rule above): tests/test_board.py runs the pure code between `/* LOGIC:BEGIN` and `/* LOGIC:END */` under Node (the worker image has Node 22) and can call only the names in its FUNCTIONS list: a new pure function goes inside that block and into FUNCTIONS. A test that skips with "node is not installed" proved nothing.
+- Exception in this repository (replaces the matching rule above): tests/test_board_browser.py skips in the gates (the worker image has no Playwright or Chromium), so it cannot make the gates fail before the code exists and a test added only there proves nothing in them: acceptance needs at least one failing test in tests/test_board.py, and a change to what the page sends, stores or renders is proven only when the CI job `browser` is green on the pull request.
+- Exception in this repository (replaces the matching rule above): The demo data (the `board-demo` block) and docs/img are fake on purpose: never put a token, a private repository name or real run data in them. docs/board.md says where each number comes from, what it costs in requests and what is and is not verified; a change to any of those updates it in the same pull request.
