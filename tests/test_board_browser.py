@@ -684,9 +684,10 @@ def test_a_picker_load_overtaken_by_a_newer_one_is_dropped_when_it_arrives(brows
     context.close()
 
 
-def paged_jobs(context, total, run_id=101):
-    """The jobs of a run as GitHub gives them: a hundred to a page, `total_count` for all. Returns the list of pages asked for."""
-    asked = []
+def paged_jobs(context, total, run_id=101, fail_once_page=None):
+    """The jobs of a run as GitHub gives them: a hundred to a page, `total_count` for all. Returns the list of pages asked for.
+    With `fail_once_page` that page answers 500 the first time it is asked for."""
+    asked, failed = [], []
 
     def handle(route, request):
         if request.method == "OPTIONS":
@@ -694,6 +695,9 @@ def paged_jobs(context, total, run_id=101):
         found = re.search(r"[?&]page=(\d+)", request.url)
         n = int(found.group(1)) if found else 1
         asked.append(n)
+        if n == fail_once_page and not failed:
+            failed.append(n)
+            return route.fulfill(status=500, headers=CORS, content_type="application/json", body='{"message":"boom"}')
         jobs = [{"id": 5000 + i, "name": f"shard-{i}", "status": "completed", "conclusion": "success", "started_at": iso(500), "completed_at": iso(400), "steps": []}
                 for i in range((n - 1) * 100, min(total, n * 100))]
         route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps({"total_count": total, "jobs": jobs}))
@@ -888,6 +892,33 @@ def test_workflows_crowded_out_of_the_repository_list_are_read_up_to_two_dozen_a
     assert len([p for p in page.gh.paths() if re.fullmatch(rf"{base}/actions/workflows/\d+/runs", p)]) == 24
     repos(page)
     assert "2 workflow chưa đọc được lịch sử" in text(page, "#repo-grid .repo")                 # the two beyond the limit are said to be unread, not shown as never having run
+    context.close()
+
+
+def test_a_page_of_jobs_that_failed_is_asked_for_again_after_half_a_minute(browser):
+    context, page = new_page(browser)
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    asked = paged_jobs(context, 250, run_id=90, fail_once_page=3)
+    page.goto(PAGE_URL)
+    loaded(page)
+    open_tab(page, "repos")
+    wait(page, "document.querySelector('#repo-grid .repo h3 a') !== null")
+    row = page.locator("details.wf", has_text="Nightly")
+    open_row = "document.querySelector('details.wf[open]')"
+    row.locator(":scope > summary").click()
+    wait(page, f"{open_row} !== null && {open_row}.querySelector('.total') !== null")
+    assert "200 job" in row.locator(".total").inner_text() and "50 job nữa chưa đọc được" in row.locator("p.bad").inner_text()           # the third page failed
+    row.locator(":scope > summary").click()
+    wait(page, f"{open_row} === null")
+    row.locator(":scope > summary").click()                                                                                                          # folded and opened again within the half minute: what was read is shown
+    wait(page, f"{open_row} !== null")
+    assert "200 job" in row.locator(".total").inner_text() and asked.count(3) == 1
+    page.clock.run_for(31_000)
+    row.locator(":scope > summary").click()
+    wait(page, f"{open_row} === null")
+    row.locator(":scope > summary").click()                                                                                                          # after it the missing page is asked for again
+    wait(page, f"{open_row} !== null && {open_row}.querySelector('.total') !== null && {open_row}.querySelector('.total').textContent.includes('250 job')")
+    assert asked.count(3) == 2 and row.locator("p.bad").count() == 0
     context.close()
 
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-N9a4Wtsnz11ARIny0R1Wf9im15iPJEEfH7/MBPLhQqg='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-JPdr1eaH6wsNr98/Iqfo/gpOeten1+jgoliJaYHiFTo='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -573,7 +573,7 @@ function gatherJobs(first, rest) {
   const seen = new Set(), jobs = [];
   for (const page of [first.jobs, ...rest]) for (const j of (Array.isArray(page) ? page : []).map(normJob)) if (j && !seen.has(j.id)) { seen.add(j.id); jobs.push(j); }
   const total = Number.isInteger(first.total_count) ? first.total_count : 0;
-  return { jobs, omitted: Math.max(0, total - jobs.length) };
+  return { jobs, omitted: Math.max(0, total - jobs.length), failed: rest.filter((p) => !Array.isArray(p)).length };
 }
 // A run that is run again keeps its id and gets the next attempt; the jobs endpoint then lists the latest attempt, so what was read for the earlier one is another entry.
 function jobKey(repo, run) { return repo + "#" + run.id + "#" + (run.attempt > 1 ? run.attempt : 1); }
@@ -881,11 +881,33 @@ function extractCrons(text) {
 }
 // Whether `on` names workflow_dispatch: `on: workflow_dispatch`, `on: [push, workflow_dispatch]`, a list item or a key directly under `on`. The word in a step name, a
 // script or a condition (`github.event_name == 'workflow_dispatch'`) does not make a manual trigger.
+// The top-level entries of a flow collection written on one line: the keys of `{a: 1, b: [x]}` are ["a", "b"], the items of `[a, b]` are ["a", "b"]; what is nested deeper
+// is not an entry. Quotes are respected and dropped; an unclosed collection gives null (nothing is guessed).
+function flowTop(text) {
+  const t = String(text).trim(), open = t[0];
+  if (open !== "{" && open !== "[") return null;
+  const items = [];
+  let depth = 0, quote = "", cur = "", keyDone = false, closed = false;
+  const end = () => { const s = cur.trim(); if (s) items.push(s); cur = ""; keyDone = false; };
+  for (let i = 1; i < t.length && !closed; i++) {
+    const ch = t[i];
+    if (quote) { if (ch === quote) quote = ""; else if (depth === 0 && !keyDone) cur += ch; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === "{" || ch === "[") { depth++; continue; }
+    if (ch === "}" || ch === "]") { if (depth === 0) { end(); closed = true; } else depth--; continue; }
+    if (ch === "," && depth === 0) { end(); continue; }
+    if (ch === ":" && depth === 0 && open === "{") { keyDone = true; continue; }
+    if (depth === 0 && !keyDone) cur += ch;
+  }
+  return closed ? items : null;
+}
 function hasDispatch(text) {
-  const word = /(?:^|[\s,\[{"'-])workflow_dispatch(?:$|[\s,\]}"':])/;
   for (const { line, onTop, onDirect } of yamlLines(text)) {
     const code = line.replace(/(^|\s)#.*$/, "");
-    if (onTop && word.test(code.replace(/^(?:on|"on"|'on')\s*:/, ""))) return true;
+    if (onTop) {                                                                                       // `on: workflow_dispatch`, `on: [push, workflow_dispatch]`, `on: {workflow_dispatch: {}}`
+      const value = code.replace(/^(?:on|"on"|'on')\s*:/, "").trim(), top = flowTop(value);
+      if (top !== null ? top.includes("workflow_dispatch") : /^["']?workflow_dispatch["']?$/.test(value)) return true;
+    }
     if (onDirect && /^\s*(?:-\s*)?["']?workflow_dispatch["']?\s*(?::.*)?$/.test(code)) return true;
   }
   return false;
@@ -1438,7 +1460,7 @@ async function loadJobs(model, run) {
   const gen = state.gen, got = await readJobs("/repos/" + model.repo + "/actions/runs/" + run.id + "/jobs");
   state.loadingJobs.delete(k);
   if (gen !== state.gen) return;
-  state.jobsCache.set(k, { at: Date.now(), active: runState(run).active, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0 });
+  state.jobsCache.set(k, { at: Date.now(), active: runState(run).active, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0, incomplete: !!(got && got.failed) });
   render();
 }
 async function readJobs(path) {                                          // path: ".../actions/runs/{id}/jobs"; null when the first page cannot be read
@@ -1455,7 +1477,7 @@ function omittedOf(model, run) {                                         // jobs
 function jobsOf(model, run) {
   if (model.jobs && Object.prototype.hasOwnProperty.call(model.jobs, run.id)) return model.jobs[run.id];
   const e = state.jobsCache.get(jobKey(model.repo, run));
-  return e && ((!e.active && e.jobs !== null) || Date.now() - e.at < 30000) ? e.jobs : undefined;        // a finished run's jobs are kept for good; a run still going, or a read that failed, for half a minute
+  return e && ((!e.active && e.jobs !== null && !e.incomplete) || Date.now() - e.at < 30000) ? e.jobs : undefined;        // a finished run's jobs are kept for good; a run still going, or a read that failed (a page of it too), for half a minute
 }
 
 // ---- drawing ----

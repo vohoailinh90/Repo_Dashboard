@@ -33,7 +33,7 @@ FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normIn
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop")
 
 
 def _node(cases: list) -> list:
@@ -1043,3 +1043,24 @@ def test_a_schedule_written_in_a_flow_mapping_on_the_on_line_is_read_and_one_nes
              ("on: {other: [{cron: '0 13 * * *'}]}\n", [])]                                                                  # a sequence of cron-like items under another key
     assert _node([["extractCrons", [t]] for t, _ in cases]) == [expected for _, expected in cases]
     assert _one("hasDispatch", "on: {push: {branches: [main]}, schedule: [{cron: '0 4 * * *'}], workflow_dispatch: {}}\n") is True
+
+
+def test_the_top_level_entries_of_a_flow_collection_written_on_one_line():
+    cases = [("{a: 1, b: [x, y], 'c d': {e: f}}", ["a", "b", "c d"]), ("[a, \"b\", c]", ["a", "b", "c"]), ("{}", []), ("[]", []), ("{push: {branches: [\"a,b\"]}}", ["push"]),
+             ("[a, [b, c], d]", ["a", "d"]), ("{a: 1", None), ("[a, b", None), ("workflow_dispatch", None), ("", None), (None, None)]
+    assert _node([["flowTop", [text]] for text, _ in cases]) == [expected for _, expected in cases]
+
+
+def test_workflow_dispatch_in_a_flow_form_of_on_counts_only_at_the_top_level():
+    cases = [("on: {push: {branches: [workflow_dispatch]}}\n", False), ("on: {workflow_dispatch: {}}\n", True), ("on: {push: {}, workflow_dispatch: null}\n", True),
+             ("on: {push: {types: [x]}, \"workflow_dispatch\": {}}\n", True), ("on: [\"workflow_dispatch\", push]\n", True), ("on: [push]\n", False), ("on: [workflow_dispatch\n", False),
+             ("on: workflow_dispatch # x\n", True), ("on: \"workflow_dispatch\"\n", True), ("on: workflow_dispatch_x\n", False), ("on: [push, {workflow_dispatch: 1}]\n", False),
+             ("on: {push: {branches: [\"a,workflow_dispatch\"]}}\n", False), ("on: {workflow_dispatch: {inputs: {a: 1}}, push: {}}\n", True), ("on: push\n", False)]
+    assert _node([["hasDispatch", [text]] for text, _ in cases]) == [expected for _, expected in cases]
+
+
+def test_a_page_of_jobs_that_failed_is_counted_so_that_what_was_read_is_not_kept_for_good():
+    first = {"jobs": [_gh_job(i) for i in range(100)], "total_count": 300}
+    page = lambda lo: [_gh_job(i) for i in range(lo, lo + 100)]    # noqa: E731
+    got = _node([["gatherJobs", [first, [page(100), page(200)]]], ["gatherJobs", [first, [page(100), None]]], ["gatherJobs", [first, [None, None]]], ["gatherJobs", [first, []]]])
+    assert [(len(g["jobs"]), g["omitted"], g["failed"]) for g in got] == [(300, 0, 0), (200, 100, 1), (100, 200, 2), (100, 200, 0)]       # not asked for is not the same as failed
