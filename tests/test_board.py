@@ -33,7 +33,7 @@ FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normIn
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop, closestMinutes")
 
 
 def _node(cases: list) -> list:
@@ -302,6 +302,8 @@ def _py_field(text, lo, hi, names=(), base=0):
 
 def _py_occurrences(expr, start, end, limit, zone=None):
     """Every matching minute in (start, end), found by looking at each minute in turn (vixie cron: a day must match both day fields when either starts with `*`, either one when both are restricted).
+    GitHub runs a schedule at most once every five minutes: when two matching minutes of one hour are closer than that, a matching minute less than five minutes after the one kept
+    before it is dropped (a short gap only across the turn of the hour is left alone).
     With a zone the fields are read on that zone's wall clock; a local time that happens twice (the clock put back) counts once, and one that never happens (the clock put forward) runs
     at the moment the clock jumps, once however many of the skipped minutes match."""
     f = expr.split()
@@ -320,6 +322,7 @@ def _py_occurrences(expr, start, end, limit, zone=None):
         day_ok = (w.day in dom and wd in dow) if (dom_any or dow_any) else (w.day in dom or wd in dow)       # `*` or `*/2` in either: both sets; two restricted: either
         return w.month in month and day_ok and w.hour in hour and w.minute in minute
 
+    dense = any(b - a < 5 for a, b in zip(sorted(minute), sorted(minute)[1:]))
     out, t = [], start + dt.timedelta(minutes=1)
     t = t.replace(second=0, microsecond=0)
     if t <= start:
@@ -335,7 +338,7 @@ def _py_occurrences(expr, start, end, limit, zone=None):
                 first = t.replace(tzinfo=None) + before
                 skipped = any(fits(first + dt.timedelta(minutes=i)) for i in range(int((now - before).total_seconds() // 60)))
             before = now
-        if (not w.fold and fits(w)) or skipped:                                                              # fold: the second pass through a repeated hour
+        if ((not w.fold and fits(w)) or skipped) and (not (dense and out) or int(t.timestamp() * 1000) - out[-1] >= 300000):     # fold: the second pass through a repeated hour
             out.append(int(t.timestamp() * 1000))
         t += dt.timedelta(minutes=1)
     return out
@@ -343,7 +346,8 @@ def _py_occurrences(expr, start, end, limit, zone=None):
 
 CRONS = ["0 1 * * 3,6", "*/30 * * * *", "0 0 1 * *", "30 1 * * 0", "15 10,22 * * MON-FRI", "5 4 31 * *", "0 */6 * * *", "0 9 1,15 * 1", "59 23 31 DEC *",
          "0 0 * JAN-MAR *", "10-20/5 * * * *", "0 0 29 2 *", "0 12 * * SAT,SUN", "7 * * * *", "0 0 * * *", "*/7 3 * * 1-5", "0 8 15 * *", "20 4 * * 2/2",
-         "0 2 */2 * *", "0 2 * * */2", "0 0 1 * */2", "0 2 */2 * 1", "0 0 */10 * 1-5", "0 0 * * 7", "0 0 * * 5-7", "30 6 * * 1-7", "*/90 * * * *", "*/7 * * * *"]
+         "0 2 */2 * *", "0 2 * * */2", "0 0 1 * */2", "0 2 */2 * 1", "0 0 */10 * 1-5", "0 0 * * 7", "0 0 * * 5-7", "30 6 * * 1-7", "*/90 * * * *", "*/7 * * * *",
+         "* * * * *", "*/2 * * * *", "0,2 3 * * *", "58,2 23,0 * * *", "*/4 6-7 * * 1-5", "*/5 * * * *", "59,1 * * * *"]      # the last seven: at the five-minute floor, or close to it
 STARTS = [dt.datetime(2026, 10, 16, 23, 17, tzinfo=UTC), dt.datetime(2026, 12, 31, 23, 59, tzinfo=UTC), dt.datetime(2028, 2, 20, 0, 0, tzinfo=UTC)]
 
 
@@ -358,6 +362,23 @@ def test_cron_runs_match_a_minute_by_minute_oracle():
     for case, js, py in zip(cases, got, expected):
         assert js == py, case
     assert any(expected), "the oracle found nothing at all: the comparison would prove nothing"
+
+
+def test_a_cron_closer_than_five_minutes_runs_no_more_often_than_every_five_and_says_so():
+    from_ms, until_ms = _ms("2026-10-17T10:00Z"), _ms("2026-10-17T11:00Z")
+    every = _one("occurrences", "* * * * *", from_ms, until_ms, 100)
+    assert _utc(*every)[:3] == ["2026-10-17T10:01Z", "2026-10-17T10:06Z", "2026-10-17T10:11Z"] and len(every) == 12             # 59 minutes of matches, one in five
+    assert len(_one("occurrences", "* * * * *", _ms("2026-10-17T00:00Z"), _ms("2026-10-18T00:00Z"), 2000)) == 288                  # a day: 288, not 1440
+    assert _utc(*_one("occurrences", "0,2 3 * * *", _ms("2026-10-17T00:00Z"), _ms("2026-10-18T00:00Z"), 5)) == ["2026-10-17T03:00Z"]       # 03:02 is under the floor
+    assert _utc(*_one("occurrences", "*/5 * * * *", from_ms, until_ms, 100))[:2] == ["2026-10-17T10:05Z", "2026-10-17T10:10Z"]       # exactly five minutes is allowed
+    cases = [("* * * * *", 1), ("*/2 * * * *", 2), ("0,2 3 * * *", 2), ("58,2 23,0 * * *", 56), ("*/5 * * * *", 5), ("*/7 * * * *", 7), ("0 0 * * *", None), ("0 3 * * *", None),
+             ("0,5 3 * * *", 5), ("* 3 * * *", 1), ("59,1 * * * *", 58), ("0,2,30 3 * * *", 2)]               # a short gap only across the turn of the hour (:56 then :00 for */7, :59 then :01) does not count
+    assert _node([["closestMinutes", [_one("parseCron", e)]] for e, _ in cases]) == [g for _, g in cases]
+    odd = _utc(*_one("occurrences", "*/7 * * * *", _ms("2026-10-17T10:00Z"), _ms("2026-10-17T11:10Z"), 100))
+    assert "2026-10-17T10:56Z" in odd and "2026-10-17T11:00Z" in odd                          # every run of a 7-minute cron stays, the 4 minutes across the hour included
+    words = _node([["describeCron", [e]] for e in ("*/2 * * * *", "* * * * *", "CRON_TZ=Asia/Tokyo 0,2 3 * * *", "*/5 * * * *", "*/15 * * * *", "58,2 23,0 5 * *", "*/7 * * * *")])
+    assert words == ["*/2 * * * * (UTC): GitHub chạy tối đa 5 phút một lần", "* * * * * (UTC): GitHub chạy tối đa 5 phút một lần",
+                     "0,2 3 * * * (Asia/Tokyo): GitHub chạy tối đa 5 phút một lần", "mỗi 5 phút", "mỗi 15 phút", "58,2 23,0 5 * *", "*/7 * * * *"]
 
 
 def test_the_oracle_itself_finds_a_leap_day_and_the_or_rule():

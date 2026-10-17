@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-qHZaiM+IrnVFI+15+Aozu5YtX5S4xALGbBWikiGtTY8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-b4+/64Ep2iLTuk093Pq9078K0+cMExP85L5ydrPz2gM='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -754,11 +754,21 @@ function dayMatches(c, y, mo, d, wd) {
   if (!c.month.includes(mo + 1)) return false;
   return c.domAny || c.dowAny ? c.dom.includes(d) && c.dow.includes(wd) : c.dom.includes(d) || c.dow.includes(wd);
 }
+// GitHub runs a schedule at most once every five minutes, whatever the cron says: `* * * * *` is accepted and still runs no more often than that. For a cron whose matching
+// minutes of one hour are closer than that, a run is kept only if it is at least that long after the one kept before it. Which five-minute grid GitHub really uses is not
+// known, so this is the most it can run, not a promise of the minute. A short gap only where one hour ends and the next begins (`*/7`: :56, then :00) is left alone: what
+// GitHub does with that is not known either.
+const SCHEDULE_FLOOR_MIN = 5;
+function closestMinutes(c) {                                                                       // minutes between the two closest matching minutes of the same hour
+  let gap = Infinity;
+  for (let i = 1; i < c.minute.length; i++) gap = Math.min(gap, c.minute[i] - c.minute[i - 1]);
+  return gap;
+}
 function occurrences(expr, fromMs, untilMs, limit) {
   const c = typeof expr === "string" ? parseCron(expr) : expr;
   const out = [];
   if (!c) return out;
-  const zone = c.tz || null;
+  const zone = c.tz || null, apart = closestMinutes(c) < SCHEDULE_FLOOR_MIN ? SCHEDULE_FLOOR_MIN * 60000 : 1;      // 1 ms: never the same instant twice
   const start = new Date(fromMs + (zone ? zoneOffset(fromMs, zone) : 0));                          // the date on the wall clock of the schedule's zone, read as if it were UTC
   let day = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
   const last = zone ? untilMs + zoneOffset(untilMs, zone) + 86400000 : untilMs;                    // a day over: the offset at the end may not be the one in force at the start
@@ -768,7 +778,7 @@ function occurrences(expr, fromMs, untilMs, limit) {
     for (const h of c.hour) {
       for (const mi of c.minute) {
         const local = day + h * 3600000 + mi * 60000, t = zone ? zonedToUtc(local, zone) : local;
-        if (t !== null && t > fromMs && t < untilMs && out[out.length - 1] !== t) { out.push(t); if (out.length >= limit) return out; }      // times a clock change skipped all run at the jump: once
+        if (t !== null && t > fromMs && t < untilMs && (!out.length || t - out[out.length - 1] >= apart)) { out.push(t); if (out.length >= limit) return out; }       // times a clock change skipped all run at the jump: once; and never closer than the floor
       }
     }
   }
@@ -779,6 +789,7 @@ function nextOccurrence(expr, fromMs) { return occurrences(expr, fromMs, fromMs 
 function describeCron(expr) {
   const c = parseCron(expr);
   if (!c) return String(expr);
+  if (closestMinutes(c) < SCHEDULE_FLOOR_MIN) return cronLabel(expr) + ": GitHub chạy tối đa " + SCHEDULE_FLOOR_MIN + " phút một lần";       // `*/2 * * * *` is not "every 2 minutes"
   const f = c.fields, plain = (from) => f.slice(from).every((x) => x === "*");
   const every = /^\*\/(\d+)$/.exec(f[0]);
   if (every && 60 % Number(every[1]) === 0 && plain(1)) return "mỗi " + every[1] + " phút";
