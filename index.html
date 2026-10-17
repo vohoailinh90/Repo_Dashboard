@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-UxommFjZXkcLW0XkrcizQiHeMySvAND/ZUIh1WmhABQ='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KJ0p9UDSWJmOuwHxTC+siLKcTDV2S23o+v5t7O78rNk='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -557,10 +557,11 @@ function normStep(s) {
 }
 function normJob(j) {
   if (!j || !Number.isInteger(j.id)) return null;
+  const steps = Array.isArray(j.steps) ? j.steps : [];
   return { id: j.id, name: clip(j.name, 80), status: clip(j.status, 30), conclusion: j.conclusion == null ? null : clip(j.conclusion, 30),
-           startedAt: j.started_at || null, completedAt: j.completed_at || null, steps: (Array.isArray(j.steps) ? j.steps : []).slice(0, 60).map(normStep) };
+           startedAt: j.started_at || null, completedAt: j.completed_at || null, steps: steps.slice(0, MAX_STEPS).map(normStep), stepsOmitted: Math.max(0, steps.length - MAX_STEPS) };
 }
-const JOB_PAGE = 100, MAX_JOB_PAGES = 5;
+const JOB_PAGE = 100, MAX_JOB_PAGES = 5, MAX_STEPS = 300;                                         // MAX_STEPS: steps kept per job (the rest are counted, not shown)
 const LIST_PAGE = 100, MAX_PULL_PAGES = 3, MAX_PICK_PAGES = 5, HISTORY_MAX = 24, FILES_MAX = 24, MAX_WF_PAGES = 5;      // lists GitHub gives a hundred at a time: how far each is read
 // A run lists its jobs a hundred to a page and says how many it has in all (total_count). The pages to ask for after the first, never more than MAX_JOB_PAGES in all.
 function morePages(first) {
@@ -613,12 +614,12 @@ function stepCounts(steps) {
 }
 function runProgress(jobs) {
   const list = Array.isArray(jobs) ? jobs : [];
-  let stepsTotal = 0, stepsDone = 0;
-  for (const j of list) { const c = stepCounts(j.steps); stepsTotal += c.total; stepsDone += c.done; }
+  let stepsTotal = 0, stepsDone = 0, stepsOmitted = 0;
+  for (const j of list) { const c = stepCounts(j.steps); stepsTotal += c.total; stepsDone += c.done; stepsOmitted += j.stepsOmitted || 0; }
   const jobsDone = list.filter((j) => j.status === "completed").length;
   const partial = list.some((j) => j.status !== "completed" && !(j.steps && j.steps.length));      // a job that has not started lists no steps yet
   const value = stepsTotal ? stepsDone : jobsDone, max = stepsTotal || list.length;
-  return { jobs: list.length, jobsDone, stepsTotal, stepsDone, value, max, partial };
+  return { jobs: list.length, jobsDone, stepsTotal, stepsDone, stepsOmitted, value, max, partial };
 }
 function lastDone(runs) { return (runs || []).find((r) => r.status === "completed") || null; }
 const STALE_FAILURE_MS = 14 * 86400000;
@@ -800,9 +801,10 @@ function yamlLines(text) {
     const lead = line.length - line.trimStart().length;
     if (block >= 0) { if (lead > block) continue; block = -1; }                      // inside `run: |`: text, not YAML
     if (/(?:^|[:-])\s+[|>][+-]?\d*\s*(?:#.*)?$/.test(line)) block = lead;
-    if (lead === 0) { inOn = /^(?:on|"on"|'on')\s*:/.test(line); onChild = -1; }                       // a top-level key: `on` opens its scope, any other closes it
+    const item = lead === 0 && inOn && /^-(?:\s|$)/.test(line);                                        // `on:` followed by a list that is not indented: its items belong to `on`
+    if (lead === 0 && !item) { inOn = /^(?:on|"on"|'on')\s*:/.test(line); onChild = -1; }               // a top-level key: `on` opens its scope, any other closes it
     else if (inOn && onChild < 0) onChild = lead;
-    out.push({ line, lead, onTop: lead === 0 && inOn, onDirect: inOn && lead === onChild });
+    out.push({ line, lead, onTop: lead === 0 && inOn && !item, onDirect: inOn && lead === onChild });
   }
   return out;
 }
@@ -1585,6 +1587,7 @@ function pipelineBody(model, run) {
     p.max && runState(run).active ? h("div", { class: "prog" }, h("progress", { value: p.value, max: p.max, "aria-label": "Tiến độ " + model.repo + " lượt " + run.number }),
       h("span", { class: "small", text: (p.stepsTotal ? p.stepsDone + "/" + p.stepsTotal + " bước · " : "") + p.jobsDone + "/" + p.jobs + " job" + (p.partial ? " (ước lượng: có job chưa bắt đầu)" : "") })) : null,
     omittedOf(model, run) ? h("p", { class: "small bad", text: "Lượt chạy này còn " + omittedOf(model, run) + " job nữa chưa đọc được (trang đọc tối đa " + MAX_JOB_PAGES * JOB_PAGE + " job): số job và tiến độ ở trên chưa đủ." }) : null,
+    p.stepsOmitted ? h("p", { class: "small bad", text: "Còn " + p.stepsOmitted + " bước nữa của các job chưa hiện (mỗi job hiện tối đa " + MAX_STEPS + " bước): số bước và tiến độ ở trên chưa đủ." }) : null,
     flowView(flow),
     flow.attempt ? h("p", { class: "small muted", text: "⟲ lần thử thứ " + flow.attempt }) : null,
     jobs.length ? rowsView(model, run, jobs, flow.totals) : h("p", { class: "small muted", text: "Chưa có job nào: đang chờ runner." }),

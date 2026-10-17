@@ -172,7 +172,7 @@ def test_the_normalisers_keep_known_fields_cut_long_text_and_drop_what_has_no_wh
     assert _node([["normRun", [{"id": "5"}]], ["normRun", [{"id": 1.5}]], ["normRun", [None]], ["normJob", [{"id": "x"}]], ["normPull", [{"number": "3"}]],
                   ["normWorkflow", [{"id": None}]]]) == [None] * 6
     job = _one("normJob", {"id": 1, "name": "j", "status": "completed", "steps": [{"name": "s" * 300, "number": -4}] * 100})
-    assert len(job["steps"]) == 60 and len(job["steps"][0]["name"]) == 100 and job["steps"][0]["number"] == 0
+    assert len(job["steps"]) == 100 and job["stepsOmitted"] == 0 and len(job["steps"][0]["name"]) == 100 and job["steps"][0]["number"] == 0
     pr = _one("normPull", {"number": 4, "title": "t" * 300, "user": {"login": "dependabot[bot]", "type": "Bot"}, "head": {"ref": "claude/x"}})
     assert len(pr["title"]) == 140 and pr["userType"] == "Bot" and pr["branch"] == "claude/x"
     assert _one("normInfo", {"description": None, "stargazers_count": "many", "open_issues_count": -1})["stars"] == 0
@@ -207,7 +207,7 @@ def test_progress_counts_steps_and_flags_an_estimate_when_a_job_has_not_started(
     p = _one("runProgress", jobs)
     assert (p["jobs"], p["jobsDone"], p["stepsTotal"], p["stepsDone"], p["value"], p["max"], p["partial"]) == (3, 1, 5, 3, 3, 5, True)
     full = _one("runProgress", jobs[:2])
-    assert full["partial"] is False and _one("runProgress", [{"status": "queued", "steps": []}]) == {"jobs": 1, "jobsDone": 0, "stepsTotal": 0, "stepsDone": 0, "value": 0, "max": 1, "partial": True}
+    assert full["partial"] is False and _one("runProgress", [{"status": "queued", "steps": []}]) == {"jobs": 1, "jobsDone": 0, "stepsTotal": 0, "stepsDone": 0, "stepsOmitted": 0, "value": 0, "max": 1, "partial": True}
     assert _one("runProgress", None)["max"] == 0 and _one("stepCounts", None)["total"] == 0
 
 
@@ -1057,6 +1057,29 @@ def test_workflow_dispatch_in_a_flow_form_of_on_counts_only_at_the_top_level():
              ("on: workflow_dispatch # x\n", True), ("on: \"workflow_dispatch\"\n", True), ("on: workflow_dispatch_x\n", False), ("on: [push, {workflow_dispatch: 1}]\n", False),
              ("on: {push: {branches: [\"a,workflow_dispatch\"]}}\n", False), ("on: {workflow_dispatch: {inputs: {a: 1}}, push: {}}\n", True), ("on: push\n", False)]
     assert _node([["hasDispatch", [text]] for text, _ in cases]) == [expected for _, expected in cases]
+
+
+def test_the_steps_of_a_job_are_kept_up_to_a_limit_and_the_ones_left_out_are_counted():
+    step = {"name": "s", "number": 1, "status": "completed", "conclusion": "success"}
+    got = _node([["normJob", [{"id": 1, "steps": [step] * n}]] for n in (0, 299, 300, 301, 350)] + [["normJob", [{"id": 2}]], ["normJob", [{"id": 3, "steps": "x"}]]])
+    assert [(len(g["steps"]), g["stepsOmitted"]) for g in got] == [(0, 0), (299, 0), (300, 0), (300, 1), (300, 50), (0, 0), (0, 0)]
+    jobs = [{"status": "in_progress", "steps": got[3]["steps"], "stepsOmitted": 1}, {"status": "completed", "steps": got[2]["steps"], "stepsOmitted": 20}, {"status": "queued", "steps": []}]
+    assert _node([["runProgress", [jobs]], ["runProgress", [[]]], ["runProgress", [[{"status": "completed", "steps": []}]]]]) == [
+        {"jobs": 3, "jobsDone": 1, "stepsTotal": 600, "stepsDone": 600, "stepsOmitted": 21, "value": 600, "max": 600, "partial": True},
+        {"jobs": 0, "jobsDone": 0, "stepsTotal": 0, "stepsDone": 0, "stepsOmitted": 0, "value": 0, "max": 0, "partial": False},
+        {"jobs": 1, "jobsDone": 1, "stepsTotal": 0, "stepsDone": 0, "stepsOmitted": 0, "value": 1, "max": 1, "partial": False}]
+
+
+def test_an_on_list_that_is_not_indented_belongs_to_on():
+    cases = [("on:\n- push\n- workflow_dispatch\n", True), ("on:\n- push\n", False), ("on:\n- workflow_dispatch\njobs:\n  a:\n    steps:\n    - run: x\n", True),
+             ("on:\n# a comment\n- push\n\n- workflow_dispatch # by hand\n", True), ("on:\n- push\njobs:\n  a:\n    steps:\n    - run: echo workflow_dispatch\n", False),
+             ("on:\n- push\nenv:\n- workflow_dispatch\n", False),                     # `env:` is a key of its own: the list under it is not the trigger
+             ("name: x\n- workflow_dispatch\non:\n- push\n", False),                    # a list before `on` is not under it
+             ("on:\n- \"workflow_dispatch\"\n", True), ("on:\n  - push\n  - workflow_dispatch\n", True), ("on:\n-\n", False)]
+    assert _node([["hasDispatch", [t]] for t, _ in cases]) == [expected for _, expected in cases]
+    crons = [("on:\n- push\n- schedule\n", []), ("on:\n- push\nschedule:\n  - cron: '0 1 * * *'\n", []), ("on:\n  schedule:\n  - cron: '0 2 * * *'\n", ["0 2 * * *"]),
+             ("on:\n- push\njobs:\n  a:\n    steps:\n    - run: x\n", [])]
+    assert _node([["extractCrons", [t]] for t, _ in crons]) == [expected for _, expected in crons]
 
 
 def test_a_page_of_jobs_that_failed_is_counted_so_that_what_was_read_is_not_kept_for_good():

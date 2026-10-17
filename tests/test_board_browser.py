@@ -454,6 +454,28 @@ def test_the_steps_of_a_running_task_read_in_full_are_not_asked_for_again_when_t
     context.close()
 
 
+def test_a_job_with_more_steps_than_are_kept_says_how_many_are_left_out(browser):
+    context, page = new_page(browser)
+    done = lambda i: {"name": f"step {i}", "status": "completed", "conclusion": "success", "number": i, "started_at": iso(100), "completed_at": iso(90)}      # noqa: E731
+    steps = [done(i) for i in range(1, 301)] + [{"name": f"step {i}", "status": "in_progress" if i == 301 else "queued", "conclusion": None, "number": i} for i in range(301, 351)]
+    page.gh.routes[f"/repos/{REPO}/actions/runs/101/jobs"] = (200, {"jobs": [{"id": 1, "name": "build", "status": "in_progress", "started_at": iso(100), "steps": steps}]})
+    page.goto(PAGE_URL)
+    loaded(page)
+    assert "50 bước nữa" in text(page, "#home-runs .pipe p.bad") and "tối đa 300 bước" in text(page, "#home-runs .pipe p.bad")         # step 301 is running: 300/300 must not read as finished
+    assert "300/300 bước" in text(page, "#home-runs .pipe") and page.locator("#home-runs .pipe .rows li").count() == 300
+    context.close()
+
+
+def test_a_job_with_exactly_the_steps_that_are_kept_says_nothing_is_left_out(browser):
+    context, page = new_page(browser)
+    steps = [{"name": f"step {i}", "status": "completed", "conclusion": "success", "number": i, "started_at": iso(100), "completed_at": iso(90)} for i in range(1, 301)]
+    page.gh.routes[f"/repos/{REPO}/actions/runs/101/jobs"] = (200, {"jobs": [{"id": 1, "name": "build", "status": "in_progress", "started_at": iso(100), "steps": steps}]})
+    page.goto(PAGE_URL)
+    loaded(page)
+    assert page.locator("#home-runs .pipe p.bad").count() == 0 and page.locator("#home-runs .pipe .rows li").count() == 300
+    context.close()
+
+
 def test_a_run_that_is_run_again_does_not_show_the_steps_of_its_earlier_attempt(browser):
     context, page = new_page(browser)
     page.goto(PAGE_URL)
