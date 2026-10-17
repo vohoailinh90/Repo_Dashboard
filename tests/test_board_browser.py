@@ -786,6 +786,21 @@ def test_the_repository_picker_reads_further_pages_up_to_five(browser):
         context.close()
 
 
+def test_a_workflow_with_a_very_long_file_name_still_has_its_schedule_read(browser):
+    context, page = new_page(browser)
+    base = f"/repos/{REPO}"
+    path = ".github/workflows/" + "a" * 110 + ".yml"
+    page.gh.routes[f"{base}/actions/workflows"] = (200, {"workflows": [{"id": 300, "name": "long-path", "path": path, "state": "active"}]})
+    page.gh.routes[f"{base}/actions/runs"] = (200, {"workflow_runs": []})
+    page.gh.routes[f"{base}/actions/workflows/300/runs"] = (200, {"workflow_runs": []})
+    page.gh.routes[f"{base}/contents/{path}"] = (200, "on:\n  schedule:\n    - cron: '0 18 * * *'\n")
+    page.goto(PAGE_URL)
+    repos(page)
+    wait(page, "document.querySelector('.sched') !== null")
+    assert "hằng ngày 18:00 UTC" in text(page, ".sched") and f"{base}/contents/{path}" in page.gh.paths()
+    context.close()
+
+
 def test_a_workflow_history_that_could_not_be_read_is_not_passed_off_as_never_having_run(browser):
     context, page = new_page(browser)
     page.gh.routes[f"/repos/{REPO}/actions/workflows/3/runs"] = (500, {"message": "boom"})            # the weekly scan lives only in its own history: GitHub fails it

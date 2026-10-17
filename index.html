@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-sya04atlAQQGEUcRWt4TbhXOvHwJq4rqAUuGw4Bd/oo='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-4AhIEt4BpSMT3m61pxS15NLrDWjbcMcvdSXXpNz0D/8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -495,6 +495,7 @@ const OFFICE_STATES = { working: ["Đang làm", "info"], reviewing: ["Đang soá
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 function clip(value, n) { const s = value == null ? "" : String(value); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+function keep(value, n) { return (value == null ? "" : String(value)).slice(0, n); }          // an identifier (branch, path): cut without an ellipsis, so it still means what it said
 function whole(x) { return Number.isInteger(x) && x >= 0 ? x : 0; }
 function finite(x) { return typeof x === "number" && Number.isFinite(x) ? x : null; }
 function isoMs(text) { const t = Date.parse(text); return Number.isFinite(t) ? t : null; }
@@ -532,16 +533,16 @@ function safeWorkflowPath(p) { return /^\.github\/workflows\/[A-Za-z0-9._-]+\.ya
 function normInfo(i) {
   i = i || {};
   return { description: clip(i.description, 240), stars: whole(i.stargazers_count), private: !!i.private, archived: !!i.archived,
-           pushedAt: i.pushed_at || null, openIssues: whole(i.open_issues_count), defaultBranch: clip(i.default_branch, 60) };
+           pushedAt: i.pushed_at || null, openIssues: whole(i.open_issues_count), defaultBranch: keep(i.default_branch, 255) };
 }
 function normWorkflow(w) {
   if (!w || !Number.isInteger(w.id)) return null;
-  return { id: w.id, name: clip(w.name, 80), path: clip(w.path, 120), state: clip(w.state, 30) };
+  return { id: w.id, name: clip(w.name, 80), path: keep(w.path, 300), state: clip(w.state, 30) };
 }
 function normRun(r) {
   if (!r || !Number.isInteger(r.id)) return null;
   return { id: r.id, wfId: Number.isInteger(r.workflow_id) ? r.workflow_id : null, number: whole(r.run_number), attempt: whole(r.run_attempt), headRepo: clip(r.head_repository && r.head_repository.full_name, 140), status: clip(r.status, 30),
-           conclusion: r.conclusion == null ? null : clip(r.conclusion, 30), event: clip(r.event, 30), branch: clip(r.head_branch, 80),
+           conclusion: r.conclusion == null ? null : clip(r.conclusion, 30), event: clip(r.event, 30), branch: clip(r.head_branch, 80), branchRef: keep(r.head_branch, 255),
            actor: clip(r.actor && r.actor.login, 60), createdAt: r.created_at || null, startedAt: r.run_started_at || r.created_at || null, updatedAt: r.updated_at || null };
 }
 function normStep(s) {
@@ -573,7 +574,7 @@ function jobKey(repo, run) { return repo + "#" + run.id + "#" + (run.attempt > 1
 function normPull(p) {
   if (!p || !Number.isInteger(p.number)) return null;
   return { number: p.number, title: clip(p.title, 140), draft: !!p.draft, user: clip(p.user && p.user.login, 60), userType: p.user && p.user.type === "Bot" ? "Bot" : "User",
-           branch: clip(p.head && p.head.ref, 80), headRepo: clip(p.head && p.head.repo && p.head.repo.full_name, 140), updatedAt: p.updated_at || null, createdAt: p.created_at || null };
+           branch: clip(p.head && p.head.ref, 80), branchRef: keep(p.head && p.head.ref, 255), headRepo: clip(p.head && p.head.repo && p.head.repo.full_name, 140), updatedAt: p.updated_at || null, createdAt: p.created_at || null };
 }
 
 // ---- states: every one has a word and a glyph as well as a colour ----
@@ -784,7 +785,7 @@ function cronLabel(expr) {                                                      
 }
 function extractCrons(text) {
   const out = [];
-  let indent = -1, block = -1, item = null;
+  let indent = -1, block = -1, item = null, inOn = false, onChild = -1;
   const KEY = (key) => new RegExp("^\\s*(?:-\\s*)?" + key + "\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|([^#\\s][^#]*?))\\s*(?:#.*)?$");
   const CRON_LINE = KEY("cron"), ZONE_LINE = KEY("timezone");
   const pick = (m) => (m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]).trim();
@@ -804,8 +805,11 @@ function extractCrons(text) {
     const lead = line.length - line.trimStart().length;
     if (block >= 0) { if (lead > block) continue; block = -1; }                      // inside `run: |`: text, not YAML
     if (/(?:^|[:-])\s+[|>][+-]?\d*\s*(?:#.*)?$/.test(line)) block = lead;
+    if (lead === 0) { inOn = /^(?:on|"on"|'on')\s*:/.test(line); onChild = -1; }                       // a top-level key: `on` opens its scope, any other closes it
+    else if (inOn && onChild < 0) onChild = lead;                                                      // the first line inside `on` tells how its keys are indented
     if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
     if (indent < 0) {
+      if (!inOn || lead !== onChild) continue;                                                         // a `schedule` key anywhere else (a matrix, an input) is not the trigger
       const flow = /^\s*schedule\s*:\s*\[(.*)\]\s*(#.*)?$/.exec(line);
       if (flow) { for (const g of flow[1].matchAll(/\{([^}]*)\}/g)) flowItem(g[1]); continue; }
       if (/^\s*schedule\s*:\s*(#.*)?$/.test(line)) indent = lead;
@@ -961,10 +965,11 @@ function workflowStatus(wf, nowMs) {
 }
 function eventWord(ev) { return Object.prototype.hasOwnProperty.call(EVENT_WORD, ev) ? EVENT_WORD[ev] : String(ev); }
 // The open pull request whose branch this run is on, in the same repository: a fork's branch that happens to have the same name is another thing.
-function linkedPull(m, run) {
-  if (!run || !run.branch || (m.info && run.branch === m.info.defaultBranch)) return null;
+function linkedPull(m, run) {                                            // matched on the whole branch name: the clipped one drawn on a card can be the same for two branches
+  const ref = (x) => x.branchRef || x.branch;
+  if (!run || !ref(run) || (m.info && ref(run) === m.info.defaultBranch)) return null;
   const where = run.headRepo || m.repo;
-  return (m.pulls || []).find((p) => p.branch === run.branch && p.headRepo && sameRepo(p.headRepo, where)) || null;
+  return (m.pulls || []).find((p) => ref(p) === ref(run) && p.headRepo && sameRepo(p.headRepo, where)) || null;
 }
 function prStatus(pr) { return pr.draft ? "under" : "review"; }
 function codeOf(path) { const m = /([^/]+?)\.ya?ml$/i.exec(String(path == null ? "" : path)); return clip(m ? m[1].toUpperCase() : "WF", 14); }

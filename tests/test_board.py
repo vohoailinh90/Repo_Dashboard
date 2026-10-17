@@ -950,3 +950,42 @@ def test_a_pull_request_that_a_run_belongs_to_is_a_card_even_beyond_the_twelve_n
     both = _board([model(wf(1, "feat/14"), wf(2, "feat/3"))])
     assert prs(both) == list(range(1, 13)) + [14]                                                            # the 14th has a run on the board: it is a card; the 3rd is not doubled
     assert any(e["from"] == "r|o/r|1" and e["to"] == "p|o/r|14" for e in both["edges"]) and any(e["from"] == "r|o/r|2" and e["to"] == "p|o/r|3" for e in both["edges"])
+
+
+# ---- what is an identifier and what is a label ---------------------------------------------------------------------------------------------
+
+def test_only_a_schedule_directly_under_on_is_a_schedule():
+    ok = "name: x\non:\n  push:\n  schedule:\n    - cron: '0 1 * * *'\njobs:\n  a:\n    runs-on: x\n"
+    quoted = "\"on\":\n    schedule:\n        - cron: '0 2 * * *'\n"
+    after = "env:\n  A: b\non:\n  schedule:\n    - cron: '0 3 * * *'\n"
+    inputs = ("on:\n  workflow_dispatch:\n    inputs:\n      schedule:\n        description: when\n        cron: '0 4 * * *'\njobs:\n  t:\n    strategy:\n      matrix:\n"
+              "        schedule: [{cron: '0 5 * * *'}]\n        other:\n          - cron: '0 6 * * *'\n")
+    matrix = "on: push\njobs:\n  t:\n    strategy:\n      matrix:\n        schedule:\n          - cron: '0 7 * * *'\n"
+    top_level = "schedule:\n  - cron: '0 8 * * *'\non: push\n"
+    both = "on:\n  schedule:\n    - cron: '0 9 * * *'\njobs:\n  t:\n    strategy:\n      matrix:\n        schedule:\n          - cron: '0 10 * * *'\n"
+    flow = "on:\n  schedule: [{cron: '0 11 * * *'}]\njobs:\n  t:\n    strategy:\n      matrix:\n        schedule: [{cron: '0 12 * * *'}]\n"
+    sibling = "on:\n  push:\nenv:\n  schedule:\n    - cron: '0 13 * * *'\n"                     # the same indentation as the keys of `on`, but in another top-level section
+    assert _node([["extractCrons", [t]] for t in (ok, quoted, after, inputs, matrix, top_level, both, flow, sibling)]) == [
+        ["0 1 * * *"], ["0 2 * * *"], ["0 3 * * *"], [], [], [], ["0 9 * * *"], ["0 11 * * *"], []]
+
+
+def test_two_long_branch_names_that_share_their_first_eighty_characters_are_not_the_same_branch():
+    common = "feature/" + "x" * 90
+    a, b = common + "-alpha", common + "-beta"
+    pull = lambda n, ref: {"number": n, "title": "t", "head": {"ref": ref, "repo": {"full_name": "o/r"}}, "user": {"login": "u"}}      # noqa: E731
+    ra, rb, pa, pb = _node([["normRun", [{"id": 1, "head_branch": a}]], ["normRun", [{"id": 2, "head_branch": b}]], ["normPull", [pull(1, a)]], ["normPull", [pull(2, b)]]])
+    assert len(ra["branch"]) == 80 and ra["branch"] == rb["branch"]                              # what a card shows is cut, and cut to the same text
+    assert ra["branchRef"] == a and rb["branchRef"] == b and pb["branchRef"] == b                # what is compared is not
+    info = {"defaultBranch": "main"}
+    assert _one("linkedPull", _model(repo="o/r", info=info, pulls=[pb]), ra) is None
+    assert _one("linkedPull", _model(repo="o/r", info=info, pulls=[pa]), ra)["number"] == 1
+    long_default = "release/" + "d" * 90
+    model = _model(repo="o/r", info=_one("normInfo", {"default_branch": long_default}), pulls=[{**pull(3, long_default), "branch": "x", "branchRef": long_default, "headRepo": "o/r"}])
+    assert model["info"]["defaultBranch"] == long_default and _one("linkedPull", model, {"id": 9, "branch": "x", "branchRef": long_default}) is None     # a run on the default branch is nobody's pull request
+
+
+def test_a_long_workflow_path_is_kept_whole_so_its_file_can_still_be_read():
+    path = ".github/workflows/" + "a" * 110 + ".yml"
+    w = _one("normWorkflow", {"id": 1, "name": "n", "path": path, "state": "active"})
+    assert w["path"] == path and _one("safeWorkflowPath", w["path"]) is True
+    assert len(_one("normWorkflow", {"id": 1, "name": "n", "path": ".github/workflows/" + "a" * 400 + ".yml"})["path"]) == 300       # still bounded
