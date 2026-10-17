@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-7JOeW1+cfVcZ2mwQurC2Q0/fELrG4EpcaPz45nCtIXg='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2sqblm5H04BrM+Lny0XmfBO00Tt7FWjcH7FXGOVlPdU='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -864,6 +864,7 @@ function flowDepth(code, depth) {                                               
   }
   return depth;
 }
+const ON_KEY = /^(?:[&!]\S*\s+)*(?:on|"on"|'on')\s*:/;                                              // the `on` key, with the anchor or tag a key may carry (`&t on:`, `!!str on:`)
 function yamlLines(text) {
   const out = [], raws = String(text == null ? "" : text).split(/\r?\n/);
   let block = -1, inOn = false, onChild = -1, root = -1;                                                  // root: the column of the document's top-level keys (the whole document may be indented)
@@ -889,7 +890,7 @@ function yamlLines(text) {
       }
     }
     const item = lead === root && inOn && /^-(?:\s|$)/.test(line.trimStart());                         // `on:` followed by a list that is not indented: its items belong to `on`
-    if (lead === root && !item) { inOn = /^(?:on|"on"|'on')\s*:/.test(line.trimStart()); onChild = -1; }          // a top-level key: `on` opens its scope, any other closes it
+    if (lead === root && !item) { inOn = ON_KEY.test(line.trimStart()); onChild = -1; }          // a top-level key: `on` opens its scope, any other closes it
     else if (inOn && onChild < 0) onChild = lead;
     out.push({ line, lead, onTop: lead === root && inOn && !item, onDirect: inOn && lead === onChild });
   }
@@ -956,7 +957,7 @@ function extractCrons(text) {
     if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
     if (indent < 0) {
       if (onTop) {                                                                                     // `on: {schedule: [...]}` on one line
-        const inner = flowSequenceOf(stripComment(line.trimStart().replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "")), "schedule");       // an anchor or a tag in front of the value is not part of it
+        const inner = flowSequenceOf(stripComment(line.trimStart().replace(ON_KEY, "").replace(/^\s*(?:[&!]\S+\s+)*/, "")), "schedule");       // an anchor or a tag in front of the value is not part of it
         if (inner !== null) for (const g of inner.matchAll(/\{([^}]*)\}/g)) flowItem(g[1]);
         continue;
       }
@@ -1001,7 +1002,7 @@ function hasDispatch(text) {
   for (const { line, onTop, onDirect } of yamlLines(text)) {
     const code = stripComment(line);
     if (onTop) {                                                                                       // `on: workflow_dispatch`, `on: [push, workflow_dispatch]`, `on: {workflow_dispatch: {}}`
-      const value = code.trimStart().replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "").trim(), top = flowTop(value);
+      const value = code.trimStart().replace(ON_KEY, "").replace(/^\s*(?:[&!]\S+\s+)*/, "").trim(), top = flowTop(value);
       if (top !== null ? top.includes("workflow_dispatch") : /^["']?workflow_dispatch["']?$/.test(value)) return true;
     }
     if (onDirect && /^\s*(?:-\s*)?(?:[&!]\S*\s+)*["']?workflow_dispatch["']?\s*(?::.*)?$/.test(code)) return true;

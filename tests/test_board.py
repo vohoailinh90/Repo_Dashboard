@@ -1057,6 +1057,15 @@ def test_an_anchor_a_tag_or_an_alias_in_front_of_a_flow_cron_value_is_resolved()
     assert _node([["extractCrons", [t]] for t, _ in cases]) == [expected for _, expected in cases]
 
 
+def test_an_anchor_or_a_tag_on_the_on_key_itself_does_not_hide_the_triggers():
+    cases = [("&triggers on:\n  schedule:\n    - cron: '0 2 * * *'\n  workflow_dispatch:\n", ["0 2 * * *"], True), ("!!str on: [push, workflow_dispatch]\n", [], True),
+             ("&t \"on\": {schedule: [{cron: '0 3 * * *'}]}\n", ["0 3 * * *"], False), ("&a !!str 'on':\n  - workflow_dispatch\n", [], True),
+             ("  &t on:\n    schedule: [{cron: '0 4 * * *'}]\n", ["0 4 * * *"], False), ("&x onion:\n  workflow_dispatch:\n", [], False),
+             ("&x jobs:\n  b:\n    on: [workflow_dispatch]\n", [], False), ("&t on: &v [push, workflow_dispatch]\n", [], True)]
+    assert _node([["extractCrons", [t]] for t, _, _ in cases]) == [crons for _, crons, _ in cases]
+    assert _node([["hasDispatch", [t]] for t, _, _ in cases]) == [dispatch for _, _, dispatch in cases]
+
+
 def test_a_document_whose_whole_root_mapping_is_indented_is_read_like_any_other():
     cases = [("  name: x\n  on:\n    schedule:\n      - cron: '0 2 * * *'\n    workflow_dispatch:\n", ["0 2 * * *"], True),
              ("---\n  on: [push, workflow_dispatch]\n  jobs: {}\n", [], True), ("# a comment\n\n    name: x\n    on: {schedule: [{cron: '0 3 * * *'}]}\n", ["0 3 * * *"], False),
