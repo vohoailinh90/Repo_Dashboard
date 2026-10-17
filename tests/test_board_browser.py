@@ -1268,7 +1268,7 @@ def test_after_a_secondary_rate_limit_the_page_waits_as_long_as_github_asks_and_
         repos(page)
         return text(page, "#repo-grid .repo")
 
-    assert "PR mở" in card() and "Không đọc được các lượt chạy" in card()                   # the repository is on the page, with a warning
+    assert "PR mở" in card() and "Không đọc được các lượt chạy" not in card()               # the repository is on the page as it was read in full, not as the partial look the wait cut short
     open_tab(page, "settings")
     page.click("#refresh")                                                                  # the person asks again during the wait: nothing is sent, and what is on the page stays
     page.wait_for_timeout(300)
@@ -1408,6 +1408,27 @@ def test_repositories_that_were_read_keep_their_data_when_the_hourly_count_runs_
     repos(page)
     cards = page.locator("#repo-grid .repo")
     assert cards.count() == 6 and all("PR mở" in cards.nth(i).inner_text() for i in range(6))     # every card still shows what was read, the queued ones included: no card was turned into an error
+    assert page.locator("#repo-grid .repo p.bad").count() == 0                                   # and none was replaced by the partial look the count cut short (it would warn of files and histories not read)
+    context.close()
+
+
+def test_a_look_that_lost_requests_to_the_wait_does_not_replace_what_was_read_in_full(browser):
+    context, page = new_page(browser)
+    page.goto(PAGE_URL)
+    loaded(page)
+    quiet(page)
+    assert "build" in text(page, "#home-runs .pipe")                                          # the first look read everything, the steps of the run in progress included
+    page.gh.routes[f"/repos/{REPO}/pulls"] = (403, SECONDARY)                                 # one answer of the next look starts a wait; the calls that come after it are refused
+    page.gh.extra = {"retry-after": "300"}
+    open_tab(page, "settings")
+    page.click("#refresh")
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    quiet(page)
+    open_tab(page, "home")
+    assert "build" in text(page, "#home-runs .pipe") and "Chưa đọc được các bước" not in text(page, "#home-runs .pipe")
+    repos(page)
+    card = text(page, "#repo-grid .repo")
+    assert "PR mở: 1" in card and "Không đọc được PR" not in card and "chưa đọc được lịch sử" not in card         # the model read in full is still the one on the page, with no warning from the partial look
     context.close()
 
 

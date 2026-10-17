@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-6c11lvKbAzuOf3zKSjCPsXvhtSW/YHS6oRvVs0lw9Fs='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+kIPiwBhcZr9NSA8lAkhxSsuQOcfwLjr/L5m/7xyboU='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -886,7 +886,7 @@ function extractCrons(text) {
     if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
     if (indent < 0) {
       if (onTop) {                                                                                     // `on: {schedule: [...]}` on one line
-        const inner = flowSequenceOf(line.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/\s+#.*$/, ""), "schedule");
+        const inner = flowSequenceOf(line.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "").replace(/\s+#.*$/, ""), "schedule");       // an anchor or a tag in front of the value is not part of it
         if (inner !== null) for (const g of inner.matchAll(/\{([^}]*)\}/g)) flowItem(g[1]);
         continue;
       }
@@ -932,7 +932,7 @@ function hasDispatch(text) {
   for (const { line, onTop, onDirect } of yamlLines(text)) {
     const code = line.replace(/(^|\s)#.*$/, "");
     if (onTop) {                                                                                       // `on: workflow_dispatch`, `on: [push, workflow_dispatch]`, `on: {workflow_dispatch: {}}`
-      const value = code.replace(/^(?:on|"on"|'on')\s*:/, "").trim(), top = flowTop(value);
+      const value = code.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "").trim(), top = flowTop(value);
       if (top !== null ? top.includes("workflow_dispatch") : /^["']?workflow_dispatch["']?$/.test(value)) return true;
     }
     if (onDirect && /^\s*(?:-\s*)?["']?workflow_dispatch["']?\s*(?::.*)?$/.test(code)) return true;
@@ -1335,7 +1335,7 @@ function buildDemo(spec, nowMs) {
 // ---- the page ----
 const $ = (id) => document.getElementById(id);
 const state = { repos: [], models: new Map(), demo: false, saved: null, office: null, realOffice: null, rate: null, interval: 60, open: new Set(), jobsCache: new Map(),
-                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 },
+                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 }, refused: 0,
                 view: "home", theme: "neon", mode: "auto", group: "flow", filter: { repo: "", status: "", q: "", rest: "collapse" }, focus: null, chain: null, boardEdges: [], rowOpen: new Map(), calls: 0 };
 const keyOf = (repo) => repo.toLowerCase();
 
@@ -1392,8 +1392,8 @@ async function call(path, opts) {
   if (token()) headers.Authorization = "Bearer " + token();
   const slot = (raw ? "raw:" : "") + path, known = state.etags.get(slot), gen = state.gen;
   // Out of quota with the reset still ahead: asking again only earns the same refusal, and a long list would send hundreds of them.
-  if (quotaSpent()) return { status: 403, data: { message: "API rate limit exceeded (request not sent)" } };
-  if (cooling()) return { status: 403, data: { message: "secondary rate limit: GitHub asked to wait (request not sent)" } };
+  if (quotaSpent()) { state.refused++; return { status: 403, data: { message: "API rate limit exceeded (request not sent)" } }; }
+  if (cooling()) { state.refused++; return { status: 403, data: { message: "secondary rate limit: GitHub asked to wait (request not sent)" } }; }
   if (known) headers["If-None-Match"] = known.etag;
   let res;
   try { res = await fetch(API + path, { method: "GET", headers, cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" }); }
@@ -1953,10 +1953,11 @@ async function loadOne(repo) {
     return;
   }
   let model;
+  const refused = state.refused;                                                                  // how many requests the page had refused by then: a look that lost some is partial
   try { model = await loadRepo(repo); } catch (e) { model = { repo, ok: false, error: "Lỗi không rõ khi đọc repo." }; }
   if (state.demo || state.epoch.get(k) !== mine || !state.repos.some((r) => sameRepo(r, repo))) return;
   const before = state.models.get(k);
-  if (!model.ok && waiting() && before && before.ok) return;                                      // an error that came from the wait: what was read before stays
+  if (before && before.ok && (state.refused !== refused || (!model.ok && waiting()))) return;      // a look that lost requests to the wait, or an error that came from it: what was read in full before stays
   state.models.set(k, model);
   render();
 }

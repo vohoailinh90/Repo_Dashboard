@@ -390,6 +390,16 @@ def test_yaml_anchors_in_a_schedule_block_are_read_and_an_alias_is_resolved_only
     assert _node([["extractCrons", [t]] for t, _ in cases]) == [expected for _, expected in cases]
 
 
+def test_an_anchor_or_a_tag_in_front_of_the_value_of_on_is_not_part_of_it():
+    dispatch = [("on: &t [push, workflow_dispatch]\n", True), ("on: &t [push]\n", False), ("on: &t {workflow_dispatch: {}}\n", True), ("on: !!seq [workflow_dispatch]\n", True),
+                ("on: &t !!seq [push, workflow_dispatch] # by hand\n", True), ("on: &t workflow_dispatch\n", True), ("on: &t push\n", False), ("on: &t\n  workflow_dispatch:\n", True),
+                ("on: &t [push, \"workflow_dispatch\"]\n", True), ("on: [&a push, workflow_dispatch]\n", True)]
+    assert _node([["hasDispatch", [t]] for t, _ in dispatch]) == [expected for _, expected in dispatch]
+    crons = [("on: &t {schedule: [{cron: '0 5 * * *'}]}\n", ["0 5 * * *"]), ("on: !!map {schedule: [{cron: '0 6 * * *'}]}\n", ["0 6 * * *"]),
+             ("on: &t {push: {}, schedule: [{cron: '0 7 * * *'}]} # c\n", ["0 7 * * *"]), ("on: &t {push: {}}\n", [])]
+    assert _node([["extractCrons", [t]] for t, _ in crons]) == [expected for _, expected in crons]
+
+
 def test_a_secondary_rate_limit_is_told_from_the_hourly_count_and_from_a_refusal():
     cases = [((429, "30", "4000", "", 0), 30000), ((403, "120", "4000", "You have exceeded a secondary rate limit", 0), 120000),
              ((403, None, "4000", "You have exceeded a secondary rate limit. Please wait a few minutes", 0), 60000), ((403, None, "4000", "You have exceeded a secondary rate limit", 1), 120000),
