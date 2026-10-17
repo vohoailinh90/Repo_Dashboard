@@ -1600,6 +1600,38 @@ def test_the_pages_of_the_jobs_of_a_row_opened_under_a_replaced_token_are_not_as
     context.close()
 
 
+def test_a_queued_read_of_a_repository_unlinked_and_linked_again_starts_once(browser):
+    names = [f"demo/c{i}" for i in range(4)]
+    context, page = new_page(browser, repos=tuple(names))
+    for name in names:
+        page.gh.routes.update(app_routes(name))
+    held = []
+
+    def hold(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        if len(held) < 3:
+            held.append((route, request.url))                                                # three reads have the slots; the fourth, demo/c3, waits for one
+            return None
+        return route.fallback()
+
+    context.route(re.compile(r"https://api\.github\.com/repos/demo/c\d$"), hold)
+    page.goto(PAGE_URL)
+    deadline = time.monotonic() + 6
+    while len(held) < 3 and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert len(held) == 3
+    open_tab(page, "settings")
+    page.click(f'[data-remove="{names[3]}"]')
+    page.fill("#add-repo", names[3])                                                         # the waiting one is unlinked and linked again before it has started
+    page.click("#add")
+    for route, url in held:
+        route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(page.gh.routes[f"/repos/{url.split('/repos/')[1]}"][1]))
+    quiet(page)
+    assert len([r for r in page.gh.requests if r["clean"] == f"/repos/{names[3]}"]) == 1       # asked for once: by the read that was asked for last
+    context.close()
+
+
 def test_a_repository_unlinked_and_linked_again_at_once_is_not_read_by_the_old_look_as_well(browser):
     names = [f"demo/c{i}" for i in range(3)]
     histories = lambda page, name: [r for r in page.gh.requests if r["clean"].startswith(f"/repos/{name}/actions/workflows/") and r["clean"].endswith("/runs")]    # noqa: E731

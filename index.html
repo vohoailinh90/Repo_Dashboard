@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KRAq+9v8/nT9zDvjbISl7R0ASKFLEKlmnaUgzKWkq6Q='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-7JOeW1+cfVcZ2mwQurC2Q0/fELrG4EpcaPz45nCtIXg='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -866,11 +866,12 @@ function flowDepth(code, depth) {                                               
 }
 function yamlLines(text) {
   const out = [], raws = String(text == null ? "" : text).split(/\r?\n/);
-  let block = -1, inOn = false, onChild = -1;
+  let block = -1, inOn = false, onChild = -1, root = -1;                                                  // root: the column of the document's top-level keys (the whole document may be indented)
   for (let i = 0; i < raws.length; i++) {
     let line = raws[i].replace(/\t/g, "    ");
     if (/^\s*(#.*)?$/.test(line)) continue;
     const lead = line.length - line.trimStart().length;
+    if (root < 0 && !/^\s*(?:---|\.\.\.|%)/.test(line)) root = lead;
     if (block >= 0) { if (lead > block) continue; block = -1; }                      // inside `run: |`: text, not YAML
     if (/(?:^|[:-])\s+[|>][+-]?\d*\s*(?:#.*)?$/.test(line)) block = lead;
     else {
@@ -887,10 +888,10 @@ function yamlLines(text) {
         if (depth <= 0 && j > i) { line = joined; i = j; }
       }
     }
-    const item = lead === 0 && inOn && /^-(?:\s|$)/.test(line);                                        // `on:` followed by a list that is not indented: its items belong to `on`
-    if (lead === 0 && !item) { inOn = /^(?:on|"on"|'on')\s*:/.test(line); onChild = -1; }               // a top-level key: `on` opens its scope, any other closes it
+    const item = lead === root && inOn && /^-(?:\s|$)/.test(line.trimStart());                         // `on:` followed by a list that is not indented: its items belong to `on`
+    if (lead === root && !item) { inOn = /^(?:on|"on"|'on')\s*:/.test(line.trimStart()); onChild = -1; }          // a top-level key: `on` opens its scope, any other closes it
     else if (inOn && onChild < 0) onChild = lead;
-    out.push({ line, lead, onTop: lead === 0 && inOn && !item, onDirect: inOn && lead === onChild });
+    out.push({ line, lead, onTop: lead === root && inOn && !item, onDirect: inOn && lead === onChild });
   }
   return out;
 }
@@ -945,15 +946,17 @@ function extractCrons(text) {
     else if (validZone(tz)) out.push("CRON_TZ=" + tz + " " + cron);
   };
   const flush = () => { if (item) keep(item.cron, item.tz); item = null; };
+  const PROPS = "(?:[&!][^\\s,}]*\\s+)*";                                                          // anchors and tags in front of a value: `&nightly '0 2 * * *'`, `!!str x`
   const flowItem = (inner) => {
-    const c = /["']?cron["']?\s*:\s*(?:(["'])(.*?)\1|([^,]+?))\s*(?:,|$)/.exec(inner), z = /["']?timezone["']?\s*:\s*(?:(["'])(.*?)\1|([^,\s}]+))/.exec(inner);   // a plain value runs to the next comma
-    if (c) keep((c[2] !== undefined ? c[2] : c[3]).trim(), z ? (z[2] !== undefined ? z[2] : z[3]).trim() : undefined);
+    const c = new RegExp("[\"']?cron[\"']?\\s*:\\s*" + PROPS + "(?:([\"'])(.*?)\\1|([^,]+?))\\s*(?:,|$)").exec(inner);       // a plain value runs to the next comma
+    const z = new RegExp("[\"']?timezone[\"']?\\s*:\\s*" + PROPS + "(?:([\"'])(.*?)\\1|([^,\\s}]+))").exec(inner);
+    if (c) keep(resolve((c[2] !== undefined ? c[2] : c[3]).trim()), z ? resolve((z[2] !== undefined ? z[2] : z[3]).trim()) : undefined);       // an alias is the value written elsewhere, or nothing
   };
   for (const { line, lead, onTop, onDirect } of yamlLines(text)) {
     if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
     if (indent < 0) {
       if (onTop) {                                                                                     // `on: {schedule: [...]}` on one line
-        const inner = flowSequenceOf(stripComment(line.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "")), "schedule");       // an anchor or a tag in front of the value is not part of it
+        const inner = flowSequenceOf(stripComment(line.trimStart().replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "")), "schedule");       // an anchor or a tag in front of the value is not part of it
         if (inner !== null) for (const g of inner.matchAll(/\{([^}]*)\}/g)) flowItem(g[1]);
         continue;
       }
@@ -998,7 +1001,7 @@ function hasDispatch(text) {
   for (const { line, onTop, onDirect } of yamlLines(text)) {
     const code = stripComment(line);
     if (onTop) {                                                                                       // `on: workflow_dispatch`, `on: [push, workflow_dispatch]`, `on: {workflow_dispatch: {}}`
-      const value = code.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "").trim(), top = flowTop(value);
+      const value = code.trimStart().replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "").trim(), top = flowTop(value);
       if (top !== null ? top.includes("workflow_dispatch") : /^["']?workflow_dispatch["']?$/.test(value)) return true;
     }
     if (onDirect && /^\s*(?:-\s*)?(?:[&!]\S*\s+)*["']?workflow_dispatch["']?\s*(?::.*)?$/.test(code)) return true;
@@ -2028,7 +2031,11 @@ function inTurn(job) {
   });
 }
 // A read waiting for a slot belongs to the token it was asked for under: when the token is replaced, the refresh that replaces it reads every repository, so a waiting read is dropped.
-const loadOne = (repo) => { const gen = state.gen; return inTurn(() => (gen === state.gen ? loadNow(repo) : Promise.resolve())); };
+// Likewise for the repository: one that was unlinked (or asked for again) while the read waited is not read by it.
+const loadOne = (repo) => {
+  const gen = state.gen, k = keyOf(repo), epoch = state.epoch.get(k) || 0;
+  return inTurn(() => (gen === state.gen && (state.epoch.get(k) || 0) === epoch ? loadNow(repo) : Promise.resolve()));
+};
 async function loadNow(repo) {
   if (!state.repos.some((r) => sameRepo(r, repo))) return;                                        // unlinked while it waited for a slot: not one request is spent on it
   const k = keyOf(repo), mine = (state.epoch.get(k) || 0) + 1;

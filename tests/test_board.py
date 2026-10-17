@@ -1049,6 +1049,24 @@ def test_an_anchor_or_a_tag_on_one_trigger_entry_does_not_hide_it():
     assert _node([["hasDispatch", [t]] for t, _ in cases]) == [expected for _, expected in cases]
 
 
+def test_an_anchor_a_tag_or_an_alias_in_front_of_a_flow_cron_value_is_resolved():
+    cases = [("on:\n  schedule: [{cron: &nightly '0 2 * * *'}]\n", ["0 2 * * *"]), ("on: {schedule: [{cron: &n \"0 3 * * *\", timezone: &z UTC}]}\n", ["CRON_TZ=UTC 0 3 * * *"]),
+             ("env:\n  X: &nightly '0 4 * * *'\non:\n  schedule: [{cron: *nightly}]\n", ["0 4 * * *"]), ("on:\n  schedule:\n    - {cron: !!str '0 5 * * *'}\n", ["0 5 * * *"]),
+             ("on:\n  schedule: [{cron: &a '0 6 * * *'}, {cron: &b 0 7 * * *}]\n", ["0 6 * * *", "0 7 * * *"]), ("on:\n  schedule: [{cron: *missing}]\n", []),
+             ("zone: &tz UTC\non:\n  schedule: [{cron: '0 8 * * *', timezone: *tz}]\n", ["CRON_TZ=UTC 0 8 * * *"])]
+    assert _node([["extractCrons", [t]] for t, _ in cases]) == [expected for _, expected in cases]
+
+
+def test_a_document_whose_whole_root_mapping_is_indented_is_read_like_any_other():
+    cases = [("  name: x\n  on:\n    schedule:\n      - cron: '0 2 * * *'\n    workflow_dispatch:\n", ["0 2 * * *"], True),
+             ("---\n  on: [push, workflow_dispatch]\n  jobs: {}\n", [], True), ("# a comment\n\n    name: x\n    on: {schedule: [{cron: '0 3 * * *'}]}\n", ["0 3 * * *"], False),
+             ("  name: x\n  jobs:\n    b:\n      on:\n        schedule:\n          - cron: '0 2 * * *'\n        workflow_dispatch:\n", [], False),
+             ("name: x\njobs:\n  b:\n    on:\n      schedule:\n        - cron: '0 2 * * *'\n", [], False), ("on:\n  schedule:\n    - cron: '0 4 * * *'\n  workflow_dispatch:\n", ["0 4 * * *"], True),
+             ("  on:\n  - push\n  - workflow_dispatch\n", [], True), ("  on:\n  - push\n  name: x\n  - workflow_dispatch\n", [], False)]
+    assert _node([["extractCrons", [t]] for t, _, _ in cases]) == [crons for _, crons, _ in cases]
+    assert _node([["hasDispatch", [t]] for t, _, _ in cases]) == [dispatch for _, _, dispatch in cases]
+
+
 def test_a_quoted_scalar_is_skipped_whole_wherever_it_starts():
     assert _node([["stripComment", ['"a # b": 1 # c']], ["stripComment", ["'a # b' # c"]]]) == ['"a # b": 1 ', "'a # b' "]               # at the start of the line
     assert _node([["flowStart", ['"k[": [a]']], ["flowStart", ['k: "see: [x]"']], ["flowStart", ["k: 'see: {x}'"]], ["flowStart", ["k: [a]"]]]) == [6, -1, -1, 3]
