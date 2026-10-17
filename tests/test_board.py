@@ -1064,3 +1064,14 @@ def test_a_page_of_jobs_that_failed_is_counted_so_that_what_was_read_is_not_kept
     page = lambda lo: [_gh_job(i) for i in range(lo, lo + 100)]    # noqa: E731
     got = _node([["gatherJobs", [first, [page(100), page(200)]]], ["gatherJobs", [first, [page(100), None]]], ["gatherJobs", [first, [None, None]]], ["gatherJobs", [first, []]]])
     assert [(len(g["jobs"]), g["omitted"], g["failed"]) for g in got] == [(300, 0, 0), (200, 100, 1), (100, 200, 2), (100, 200, 0)]       # not asked for is not the same as failed
+
+
+def test_a_plain_cron_value_in_a_flow_mapping_is_read_as_well_as_a_quoted_one():
+    cases = [("on: {schedule: [{cron: 0 2 * * *}]}\n", ["0 2 * * *"]),
+             ("on:\n  schedule: [{cron: 0 3 * * *, timezone: Asia/Tokyo}]\n", ["CRON_TZ=Asia/Tokyo 0 3 * * *"]),
+             ("on:\n  schedule:\n    - {cron: 0 4 * * *}\n", ["0 4 * * *"]),
+             ("on:\n  schedule: [{cron: \"0 5 * * *\"}, {cron: 0 6 * * *}, {cron: '0 7 * * *'}]\n", ["0 5 * * *", "0 6 * * *", "0 7 * * *"]),
+             ("on:\n  schedule: [{cron: \"0 1,2 * * *\"}]\n", ["0 1,2 * * *"]),
+             ("on:\n  schedule: [{cron: 0 1,2 * * *}]\n", []),                      # a plain scalar ends at a comma: this is not a cron, and nothing is guessed
+             ("on:\n  schedule: [{cron: 0 8 * * *   }]\n", ["0 8 * * *"]), ("on:\n  schedule: [{timezone: Asia/Tokyo, cron: 0 9 * * *}]\n", ["CRON_TZ=Asia/Tokyo 0 9 * * *"])]
+    assert _node([["extractCrons", [t]] for t, _ in cases]) == [expected for _, expected in cases]

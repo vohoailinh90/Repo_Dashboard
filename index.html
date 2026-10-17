@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-JPdr1eaH6wsNr98/Iqfo/gpOeten1+jgoliJaYHiFTo='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-nTxz6hquQXsRen8b9zcjbTnZyFh9J1cyjho6SbueWIs='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -852,8 +852,8 @@ function extractCrons(text) {
   };
   const flush = () => { if (item) keep(item.cron, item.tz); item = null; };
   const flowItem = (inner) => {
-    const c = /["']?cron["']?\s*:\s*(["'])(.*?)\1/.exec(inner), z = /["']?timezone["']?\s*:\s*(?:(["'])(.*?)\1|([^,\s}]+))/.exec(inner);
-    if (c) keep(c[2].trim(), z ? (z[2] !== undefined ? z[2] : z[3]).trim() : undefined);
+    const c = /["']?cron["']?\s*:\s*(?:(["'])(.*?)\1|([^,]+?))\s*(?:,|$)/.exec(inner), z = /["']?timezone["']?\s*:\s*(?:(["'])(.*?)\1|([^,\s}]+))/.exec(inner);   // a plain value runs to the next comma
+    if (c) keep((c[2] !== undefined ? c[2] : c[3]).trim(), z ? (z[2] !== undefined ? z[2] : z[3]).trim() : undefined);
   };
   for (const { line, lead, onTop, onDirect } of yamlLines(text)) {
     if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
