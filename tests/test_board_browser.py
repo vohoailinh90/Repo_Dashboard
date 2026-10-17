@@ -883,8 +883,11 @@ def test_a_repository_whose_workflow_list_could_not_be_read_is_not_shown_as_havi
     assert "Không đọc được danh sách workflow" in text(page, "#inbox-list") and REPO in text(page, "#inbox-list")
     repos(page)
     card = page.locator("#repo-grid .repo", has_text=REPO).inner_text()
-    assert "Chưa đọc được workflow" in card and "Chưa có workflow" not in card
-    assert "Chưa có workflow" in page.locator("#repo-grid .repo", has_text="demo/two").inner_text()       # the other one has none, and says so
+    assert "Chưa đọc được workflow" in card and "chưa có workflow" not in card.lower()                  # not the sentence that says it has none, in any case of letters
+    assert "chưa có workflow" in page.locator("#repo-grid .repo", has_text="demo/two").inner_text().lower()       # the other one has none, and says so
+    open_tab(page, "health")
+    rows = page.locator("#health-rows .healthrow", has_text=REPO).inner_text()
+    assert "? workflow" in rows and "0 workflow" in page.locator("#health-rows .healthrow", has_text="demo/two").inner_text()
     open_tab(page, "board")
     assert "1 repo chưa đọc được danh sách workflow" in text(page, "#board-detail")
     context.close()
@@ -1294,6 +1297,63 @@ def test_a_look_at_many_repositories_stops_starting_new_ones_once_github_asks_to
     open_tab(page, "repos")
     wait(page, "document.querySelectorAll('.repo p.bad').length === 6")
     assert len(page.gh.requests) == 12                                                      # three repositories at a time, four calls each; the other three were never sent
+    notes = page.eval_on_selector_all(".repo p.bad", "els => els.map(e => e.textContent)")
+    assert sum("chờ đến" in t and "chưa được đọc" in t for t in notes) == 3                 # the three that were never started say why, with the time asking is allowed again
+    context.close()
+
+
+def test_repositories_that_were_read_keep_their_data_while_github_asks_to_wait(browser):
+    names = [f"demo/r{i}" for i in range(6)]                                                 # three are loaded at a time: three are still queued when the first answers come back
+    context, page = new_page(browser, repos=names)
+    for name in names:
+        page.gh.routes.update(app_routes(name))
+    page.goto(PAGE_URL)
+    repos(page)
+    wait(page, "[...document.querySelectorAll('#repo-grid .repo')].filter((e) => e.textContent.includes('PR mở')).length === 6")
+    quiet(page)
+    page.gh.routes = {path: (403, SECONDARY) for path in page.gh.routes}
+    page.gh.extra = {"retry-after": "300"}
+    open_tab(page, "settings")
+    page.click("#refresh")
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    quiet(page)
+    repos(page)
+    cards = page.locator("#repo-grid .repo")
+    assert cards.count() == 6 and all("PR mở" in cards.nth(i).inner_text() for i in range(6))     # every card still shows what was read before, the queued ones included
+    assert page.locator("#repo-grid .repo p.bad").count() == 0
+    context.close()
+
+
+def test_a_success_that_was_in_flight_when_the_wait_began_does_not_restart_the_backoff(browser):
+    context, page = new_page(browser, interval=30)
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('live-text').textContent === 'live'")
+    quiet(page)
+    held = []
+    context.route(lambda url: url.endswith(f"/repos/{REPO}/actions/runs?per_page=40"),
+                  lambda route, request: route.fulfill(status=204, headers=PREFLIGHT) if request.method == "OPTIONS" else held.append(route))
+    good_runs = page.gh.routes[f"/repos/{REPO}/actions/runs"][1]
+    page.gh.routes[f"/repos/{REPO}/pulls"] = (403, SECONDARY)                                 # no Retry-After: a minute, then twice that
+    page.click("#refresh")
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    deadline = time.monotonic() + 6
+    while not held and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert held                                                                               # a question asked before the wait is still unanswered
+    held[0].fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(good_runs))       # and now it is answered well
+    page.wait_for_timeout(300)
+    page.clock.run_for(61_000)                                                                # the minute is over
+    wait(page, "document.getElementById('live-text').textContent === 'live'")
+    held.clear()
+    page.click("#refresh")                                                                    # asked again after the wait, the limit comes back: now two minutes, not one
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    page.clock.run_for(100_000)                                                               # past the minute, inside the two
+    page.wait_for_timeout(300)
+    assert text(page, "#live-text") == "tạm dừng"
     context.close()
 
 

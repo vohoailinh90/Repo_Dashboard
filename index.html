@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-D6vZqfq8ZYpzXotyROMrV+jIIlfY2gGgAYBBSGb9vWo='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-297lUOHNGXa9KZ7uQG+X2HWTzHsy9ayR5aa8a/je8S8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1385,7 +1385,7 @@ function noteRate(headers) {
 function cooling() { return state.cool.until > Date.now(); }                                      // GitHub asked to wait (a secondary rate limit): nothing is sent until then
 async function call(path, opts) {
   if (state.demo) return { status: 0, data: null };                                              // the demo contacts nobody: a load that was under way when it began asks no more
-  const raw = !!(opts && opts.raw);
+  const raw = !!(opts && opts.raw), sentAt = Date.now();
   const headers = { "Accept": raw ? "application/vnd.github.raw+json" : "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
   if (token()) headers.Authorization = "Bearer " + token();
   const slot = (raw ? "raw:" : "") + path, known = state.etags.get(slot), gen = state.gen, quota = state.rate;
@@ -1406,7 +1406,7 @@ async function call(path, opts) {
   const wait = coolOff(res.status, res.headers.get("retry-after"), res.headers.get("x-ratelimit-remaining"), data && data.message, state.cool.hits);
   if (gen === state.gen) {
     if (wait > 0) { state.cool.until = Math.max(state.cool.until, Date.now() + wait); state.cool.hits++; renderRate(); setTimeout(renderRate, Math.min(wait, 3600000) + 100); }
-    else if (res.status < 400) state.cool.hits = 0;                                                  // answered well: the next limit starts the wait again from a minute
+    else if (res.status < 400 && sentAt >= state.cool.until) state.cool.hits = 0;                    // answered well to a question asked after the wait: the next limit starts again from a minute (an answer to one asked before it proves nothing)
   }
   return { status: res.status, data };
 }
@@ -1786,7 +1786,7 @@ function repoCard(repo) {
       h("div", { class: "stats" }, h("span", { text: "★ " + fmtN(m.info.stars) }), h("span", { text: "PR mở: " + (m.pullsRead ? m.pulls.length + (m.pullsMore ? "+" : "") : "?") }), h("span", { text: "Issue mở: " + (m.pullsRead && !m.pullsMore ? issues : "?") }),
         m.info.pushedAt ? h("span", { text: "push " + agoText(m.info.pushedAt) }) : null),
       (m.warnings || []).map((w) => h("p", { class: "small bad", text: w })),
-      wfs.length ? h("ul", { class: "wfs" }, wfs.slice(0, 6).map((w) => workflowRow(m, w))) : h("p", { class: "small muted", text: "Repo chưa có workflow GitHub Actions." }),
+      wfs.length ? h("ul", { class: "wfs" }, wfs.slice(0, 6).map((w) => workflowRow(m, w))) : m.workflowsRead === false ? null : h("p", { class: "small muted", text: "Repo chưa có workflow GitHub Actions." }),
       wfs.length > 6 ? h("p", { class: "small muted", text: "và " + (wfs.length - 6) + " workflow khác (xem trên GitHub)." }) : null);
   }
   const rm = card.querySelector("button[data-remove]");
@@ -1815,7 +1815,7 @@ function renderHealth(all) {
     if (!m.ok) return h("div", { class: "healthrow" }, h("b", { text: repo }), badge({ tone: "neutral", label: "Không đọc được", key: "" }), h("span", { class: "bad small", text: m.error }));
     const now = Date.now(), health = repoHealth(m, now), failing = m.workflows.filter((w) => isFailing(w, now)).length;
     return h("div", { class: "healthrow" }, h("b", { text: repo }), badge({ tone: health.tone, label: health.label, key: "" }),
-      h("span", { text: m.workflows.length + " workflow" + (failing ? ", " + failing + " lỗi" : "") }), h("span", { class: "muted small", text: "đọc lúc " + clockText(m.loadedAt) + (m.warnings && m.warnings.length ? " · " + m.warnings.length + " cảnh báo" : "") }));
+      h("span", { text: (m.workflowsRead === false ? "?" : m.workflows.length) + " workflow" + (failing ? ", " + failing + " lỗi" : "") }), h("span", { class: "muted small", text: "đọc lúc " + clockText(m.loadedAt) + (m.warnings && m.warnings.length ? " · " + m.warnings.length + " cảnh báo" : "") }));
   }) : [h("p", { class: "empty", text: "Chưa liên kết repo nào." })]));
 }
 
@@ -1941,9 +1941,15 @@ async function loadOne(repo) {
   const k = keyOf(repo), mine = (state.epoch.get(k) || 0) + 1;
   state.epoch.set(k, mine);
   if (state.demo) return;                                                                         // queued behind others when the demo began: not started
+  if (cooling()) {                                                                                // GitHub asked to wait: what is on the page stays, and a repository not read yet says why
+    if (!state.models.has(k)) { state.models.set(k, { repo, ok: false, error: "GitHub yêu cầu chờ đến " + clockText(state.cool.until) + " (giới hạn thứ cấp): repo này chưa được đọc." }); render(); }
+    return;
+  }
   let model;
   try { model = await loadRepo(repo); } catch (e) { model = { repo, ok: false, error: "Lỗi không rõ khi đọc repo." }; }
   if (state.demo || state.epoch.get(k) !== mine || !state.repos.some((r) => sameRepo(r, repo))) return;
+  const before = state.models.get(k);
+  if (!model.ok && cooling() && before && before.ok) return;                                      // an error that came from the wait: what was read before stays
   state.models.set(k, model);
   render();
 }
