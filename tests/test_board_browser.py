@@ -1,0 +1,944 @@
+"""index.html in a real browser (Chromium through Playwright), with api.github.com answered by the test.
+
+Skipped when Playwright or a browser is missing (CI installs neither): tests/test_board.py is what always runs. These prove what no source check can:
+that the token goes only into one header to one host, that the page only reads, that text from GitHub stays text, and what a person sees and can do."""
+
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import time
+from pathlib import Path
+
+import pytest
+
+from scripts import sync_csp
+
+sync_api = pytest.importorskip("playwright.sync_api")
+
+# The page is served from an address of its own, as it would be from `python3 -m http.server`, not opened as a file: Chromium may swap the process of a file:// page on
+# reload, and then a localStorage write made an instant before can be missing when the reloaded page reads it (seen under load). Over http(s) the write is ordered.
+PAGE_URL = "https://radar.test/board.html"
+TOKEN = "github_pat_TESTONLY_not_a_real_token_0123456789"
+REPO = "demo/app"
+STORE_KEY = "radar-board.v1"
+VIEWS = ["home", "board", "repos", "schedule", "inbox", "agents", "health", "settings"]
+CORS = {"access-control-allow-origin": "*", "access-control-expose-headers": "etag, x-ratelimit-remaining, x-ratelimit-limit, x-ratelimit-reset"}
+PREFLIGHT = {**CORS, "access-control-allow-headers": "authorization, accept, x-github-api-version, if-none-match", "access-control-allow-methods": "GET, OPTIONS"}
+EVIL = '<img src=x onerror="window.__pwn=1">'
+
+
+def iso(seconds_ago: float = 0) -> str:
+    return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=seconds_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@pytest.fixture(scope="module")
+def browser():
+    with sync_api.sync_playwright() as pw:
+        try:
+            exe = os.environ.get("RADAR_CHROMIUM") or None
+            b = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
+        except Exception as exc:                                       # no browser installed in this environment
+            pytest.skip(f"Chromium is not available: {str(exc)[:80]}")
+        yield b
+        b.close()
+
+
+def run_of(run_id, wf, number, status, conclusion, ago, event="push", branch="main", head=REPO):
+    return {"head_repository": {"full_name": head}, "id": run_id, "workflow_id": wf, "run_number": number, "status": status, "conclusion": conclusion, "event": event, "head_branch": branch, "actor": {"login": "me"},
+            "created_at": iso(ago), "run_started_at": iso(ago), "updated_at": iso(ago - 100)}
+
+
+def app_routes(repo: str = REPO) -> dict:
+    """The answers of a small repository: CI with a run in progress (one job, three steps) on a branch that has an agent pull request, a nightly that failed, a weekly
+    workflow whose only run is older than the 40 newest of the repository (so it is missing from the repository's own list), a schedule, and .claude/agents."""
+    base = f"/repos/{repo}"
+    run_of_here = lambda *a, **k: run_of(*a, head=repo, **k)          # noqa: E731  (the runs and the pull request come from this repository, not from a fork)
+    return {
+        f"{base}/actions/workflows/1/runs": (200, {"workflow_runs": [run_of_here(101, 1, 8, "in_progress", None, 120, branch="claude/fix-x"), run_of_here(100, 1, 7, "completed", "success", 4000)]}),
+        f"{base}/actions/workflows/2/runs": (200, {"workflow_runs": [run_of_here(90, 2, 3, "completed", "failure", 90000, "schedule"), run_of_here(80, 2, 2, "completed", "success", 180000, "schedule")]}),
+        f"{base}/actions/workflows/3/runs": (200, {"workflow_runs": [run_of_here(70, 3, 1, "completed", "success", 500000)]}),
+        f"{base}/contents/.github/workflows/weekly.yml": (200, "on:\n  schedule:\n    - cron: '0 3 * * 1'\n"),
+        base: (200, {"full_name": repo, "description": "An app", "stargazers_count": 7, "private": False, "archived": False, "pushed_at": iso(300), "open_issues_count": 3, "default_branch": "main"}),
+        f"{base}/actions/runs": (200, {"workflow_runs": [
+            run_of_here(101, 1, 8, "in_progress", None, 120, branch="claude/fix-x"), run_of_here(100, 1, 7, "completed", "success", 4000), run_of_here(90, 2, 3, "completed", "failure", 90000, "schedule")]}),
+        f"{base}/actions/workflows": (200, {"workflows": [
+            {"id": 1, "name": EVIL + "CI", "path": ".github/workflows/ci.yml", "state": "active"},
+            {"id": 2, "name": "Nightly", "path": ".github/workflows/nightly.yml", "state": "active"},
+            {"id": 3, "name": "Weekly scan", "path": ".github/workflows/weekly.yml", "state": "active"}]}),
+        f"{base}/pulls": (200, [{"number": 5, "title": "Fix <b>x</b>", "head": {"ref": "claude/fix-x", "repo": {"full_name": repo}}, "user": {"login": "me", "type": "User"}, "draft": False, "updated_at": iso(60), "created_at": iso(60)}]),
+        f"{base}/contents/.github/workflows/ci.yml": (200, "on:\n  push:\n  workflow_dispatch:\n"),
+        f"{base}/contents/.github/workflows/nightly.yml": (200, "on:\n  schedule:\n    - cron: '0 18 * * *'\n"),
+        f"{base}/contents/.claude/agents": (200, [{"name": "architect.md", "type": "file"}, {"name": "README.txt", "type": "file"}, {"name": "sub", "type": "dir"}]),
+        f"{base}/actions/runs/101/jobs": (200, {"jobs": [{"id": 1, "name": "build", "status": "in_progress", "started_at": iso(100), "steps": [
+            {"name": "Checkout", "status": "completed", "conclusion": "success", "number": 1, "started_at": iso(100), "completed_at": iso(97)},
+            {"name": "Test", "status": "in_progress", "conclusion": None, "number": 2, "started_at": iso(97)},
+            {"name": "Deploy", "status": "queued", "conclusion": None, "number": 3}]}]}),
+        f"{base}/actions/runs/100/jobs": (200, {"jobs": [{"id": 2, "name": "build", "status": "completed", "conclusion": "success", "started_at": iso(4000), "completed_at": iso(3800), "steps": [
+            {"name": "Checkout", "status": "completed", "conclusion": "success", "number": 1}]}]}),
+        f"{base}/actions/runs/90/jobs": (200, {"jobs": [{"id": 3, "name": "nightly", "status": "completed", "conclusion": "failure", "started_at": iso(90000), "completed_at": iso(89000), "steps": [
+            {"name": "Checkout", "status": "completed", "conclusion": "success", "number": 1}, {"name": "Run e2e", "status": "completed", "conclusion": "failure", "number": 2}]}]}),
+    }
+
+
+class Github:
+    """api.github.com as the test wants it: records every request, answers from `routes` ({path: (status, body)}), with ETags and a rate limit."""
+
+    def __init__(self):
+        self.requests: list[dict] = []
+        self.routes: dict = app_routes()
+        self.remaining = 4990
+        self.not_modified = 0
+
+    def handle(self, route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        path = request.url.split("https://api.github.com", 1)[1]
+        clean = path.split("?", 1)[0]
+        self.requests.append({"method": request.method, "path": path, "clean": clean, "headers": request.headers})
+        rate = {"x-ratelimit-remaining": str(self.remaining), "x-ratelimit-limit": "5000", "x-ratelimit-reset": str(int(time.time()) + 3000)}
+        if clean not in self.routes:
+            return route.fulfill(status=404, headers={**CORS, **rate}, content_type="application/json", body='{"message":"Not Found"}')
+        status, body = self.routes[clean]
+        if callable(body):
+            status, body = body()
+        text = body if isinstance(body, str) else json.dumps(body)
+        etag = '"' + hashlib.sha1(text.encode()).hexdigest()[:10] + '"'
+        if request.headers.get("if-none-match") == etag:
+            self.not_modified += 1
+            return route.fulfill(status=304, headers={**CORS, **rate, "etag": etag})
+        return route.fulfill(status=status, headers={**CORS, **rate, "etag": etag}, content_type="text/plain" if isinstance(body, str) else "application/json", body=text)
+
+    def paths(self, method="GET") -> list:
+        return [r["clean"] for r in self.requests if r["method"] == method]
+
+    def conditional(self, since: int) -> list:
+        """The requests made after the first `since`, each with whether it asked 'only if changed'."""
+        return [("if-none-match" in r["headers"]) for r in self.requests[since:]]
+
+
+def serve(context):
+    context.route("https://radar.test/**", lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8", body=sync_csp.PAGE.read_text(encoding="utf-8")))
+
+
+def new_page(browser, repos=(REPO,), width=1280, interval=0, tz="Asia/Ho_Chi_Minh", scheme="dark", theme=None, mode=None):
+    """A fresh context whose saved list holds `repos` (set once, so a reload keeps whatever the page saved since)."""
+    context = browser.new_context(viewport={"width": width, "height": 900}, timezone_id=tz, locale="vi-VN", color_scheme=scheme)
+    seed = {"repos": list(repos), "interval": interval}
+    if theme:
+        seed["theme"] = theme
+    if mode:
+        seed["mode"] = mode
+    context.add_init_script(f"if (!window.localStorage.getItem('{STORE_KEY}')) window.localStorage.setItem('{STORE_KEY}', {json.dumps(json.dumps(seed))});")
+    gh = Github()
+    context.route("https://api.github.com/**", gh.handle)
+    serve(context)
+    page = context.new_page()
+    seen, problems = [], []
+    page.on("request", lambda r: seen.append(r.url))
+    page.on("pageerror", lambda e: problems.append(str(e)))
+    page.on("console", lambda m: problems.append(m.text) if m.type in ("error", "warning") else None)
+    page.gh, page.seen, page.problems = gh, seen, problems
+    return context, page
+
+
+def wait(page, expression, seconds=8):
+    """Wait until a JavaScript expression is true. Playwright's own wait_for_function evals a string, which the page's CSP (no unsafe-eval, on
+    purpose) refuses; evaluate() goes through the debugging protocol instead."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if page.evaluate(f"() => Boolean({expression})"):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"still false after {seconds}s: {expression}")
+
+
+def text(page, selector):
+    return page.inner_text(selector)
+
+
+def open_tab(page, name):
+    page.click(f"#tab-{name}")
+    wait(page, f"!document.getElementById('view-{name}').hidden")
+
+
+def loaded(page):
+    """Home has drawn the pipeline of the run in progress: the repository was read."""
+    wait(page, "document.querySelector('#home-runs .pipe') !== null")
+
+
+@pytest.fixture
+def ui(browser):
+    context, page = new_page(browser)
+    page.goto(PAGE_URL)
+    loaded(page)
+    yield page
+    context.close()
+
+
+def quiet(page, seconds=0.5, limit=10):
+    """Wait until the page has sent nothing for a while (a look in progress has finished), and return how many requests there have been."""
+    last, since, deadline = -1, time.monotonic(), time.monotonic() + limit
+    while time.monotonic() < deadline:
+        n = len(page.gh.requests)
+        if n != last:
+            last, since = n, time.monotonic()
+        elif time.monotonic() - since >= seconds:
+            return n
+        page.wait_for_timeout(50)
+    raise AssertionError("the page keeps sending")
+
+
+def counts(page, container):
+    return {b.get_attribute("data-status"): int(b.locator(".n").inner_text()) for b in page.locator(f"#{container} button.cnt").all()}
+
+
+# ---- Home: the pipeline of a task --------------------------------------------------------------------------------------------
+
+def test_the_page_loads_clean_and_only_reads(ui):
+    assert ui.problems == []                                                         # no CSP violation, no script error
+    assert ui.title() == "GitHub Radar: bảng theo dõi repo"
+    assert ui.gh.requests and all(r["method"] == "GET" for r in ui.gh.requests)
+    assert all("authorization" not in r["headers"] for r in ui.gh.requests)          # no token, no header
+    assert {u.split("/")[2] for u in ui.seen if u.startswith("http")} == {"api.github.com", "radar.test"}              # the page itself, and GitHub: no one else
+    assert {u for u in ui.seen if "radar.test" in u} <= {PAGE_URL, "https://radar.test/favicon.ico"}                  # the page loads nothing of its own: one document
+
+
+def test_a_running_task_is_drawn_as_a_pipeline_with_its_job_and_each_step(ui):
+    pipe = ui.locator("#home-runs .pipe")
+    assert pipe.count() == 1
+    head = pipe.inner_text()
+    assert "Đang chạy" in head and "demo/app" in head and "lượt #8" in head and "nhánh claude/fix-x" in head and "đã chạy 2 phút" in head
+    titles = ui.eval_on_selector_all("#home-runs .pipe .fbox .t", "els => els.map(e => e.lastElementChild.textContent)")
+    assert titles == ["Bắt đầu", "build", "PR #5"]                                    # start, the job, and the pull request of the same branch
+    states = ui.eval_on_selector_all("#home-runs .pipe .fbox", "els => els.map(e => e.className.split(' ').find(c => c.startsWith('st-')))")
+    assert states == ["st-done", "st-running", "st-queued"]
+    assert ui.eval_on_selector_all("#home-runs .pipe .rows li", "els => els.map(e => e.className)") == ["st-done", "st-running", "st-queued"]       # the steps, in order
+    assert ui.get_attribute("#home-runs progress", "value") == "1" and ui.get_attribute("#home-runs progress", "max") == "3" and "1/3 bước" in head
+    assert "chưa bắt đầu" in pipe.inner_text() and ui.locator("#home-runs .legend span").count() == 5
+
+
+def test_the_status_bar_counts_what_is_on_the_board_and_a_click_goes_to_it(ui):
+    assert counts(ui, "home-chips") == {"needs": 2, "running": 2, "review": 1, "under": 0, "ready": 4, "blocked": 0, "done": 3}
+    ui.click("#home-chips button[data-status='needs']")
+    wait(ui, "!document.getElementById('view-board').hidden")
+    assert ui.get_attribute("#board-chips button[data-status='needs']", "aria-pressed") == "true" and text(ui, "#f-count") == "2 / 12"
+
+
+def test_the_side_panels_say_what_needs_the_person_and_what_is_ready(ui):
+    assert text(ui, "#needs-count") == "2"
+    needs = text(ui, "#needs-you")
+    assert "Nightly #3" in needs and "Fix <b>x</b>" in needs and "PR từ claude chờ bạn soát" in needs
+    assert ui.query_selector("#needs-you b b") is None                               # the title is text, not markup
+    assert text(ui, "#ready-count") == "0" and "Nightly" in text(ui, "#ready-now") and "theo lịch" in text(ui, "#ready-now")      # nothing to start by hand (CI is going); the nightly is due within a day
+
+
+def test_the_inbox_lists_the_same_things_with_a_badge(ui):
+    assert text(ui, "#inbox-count") == "2"
+    open_tab(ui, "inbox")
+    items = ui.eval_on_selector_all("#inbox-list > li", "els => els.map(e => e.innerText.replace(/\\s+/g, ' '))")
+    assert len(items) == 2 and any("Lỗi" in i and "Nightly #3" in i for i in items) and any("Chờ soát" in i and "PR từ claude" in i for i in items)
+    assert ui.get_attribute("#inbox-list a >> nth=0", "href").startswith("https://github.com/demo/app/")
+
+
+# ---- Board ------------------------------------------------------------------------------------------------------------------
+
+def board(page):
+    open_tab(page, "board")
+    wait(page, "document.querySelectorAll('#wavegrid button.node').length > 0")
+    wait(page, "document.querySelectorAll('#edges path').length > 0")
+
+
+def test_the_board_has_four_waves_with_cards_and_lines_where_the_data_relates_them(ui):
+    board(ui)
+    assert ui.locator("#wavegrid .wave").count() == 4 and text(ui, "#f-count") == "12 / 12"
+    heads = ui.eval_on_selector_all("#wavegrid .wave > h3", "els => els.map(e => e.innerText.replace(/\\s+/g, ' '))")
+    assert heads == ["Wave 0 · Kích hoạt 4", "Wave 1 · Workflow 1/3", "Wave 2 · Lượt chạy 2/4", "Wave 3 · PR / nhánh 0/1"]
+    assert ui.locator("#edges path").count() == 10                                    # 5 trigger->workflow, 4 workflow->run, 1 run->pull request of the same branch
+    assert ui.locator("#edges path.crit").count() == 2                                # upstream of the failed nightly
+    d = ui.eval_on_selector_all("#edges path", "els => els.map(e => e.getAttribute('d'))")
+    assert all(re.fullmatch(r"M[\d.]+ [\d.]+ C[\d. ]+", x) for x in d)                # coordinates and nothing else
+    assert ui.eval_on_selector("#edges", "e => e.namespaceURI") == "http://www.w3.org/2000/svg"
+    assert "<img" not in ui.inner_html("#wavegrid") and ui.query_selector("#wavegrid img") is None and ui.evaluate("window.__pwn") is None
+
+
+def test_a_card_lights_up_its_chain_and_dims_the_rest_and_a_second_click_lets_go(ui):
+    board(ui)
+    card = ui.locator("button.node[data-id='r|demo/app|101']")
+    card.click()
+    assert ui.locator("button.node.focus").count() == 1 and ui.locator("button.node.chain").count() == 4 and ui.locator("button.node.dim").count() == 7
+    assert ui.locator("#edges path.chain").count() == 4 and ui.get_attribute("button.node.focus", "aria-pressed") == "true"
+    assert "Mở lượt chạy #8 trên GitHub" in text(ui, "#board-detail") and ui.get_attribute("#board-detail a", "href") == "https://github.com/demo/app/actions/runs/101"
+    ui.locator("button.node[data-id='p|demo/app|5']").click()                         # another card: the chain moves
+    assert ui.locator("button.node.focus").count() == 1 and ui.get_attribute("button.node.focus", "data-id") == "p|demo/app|5"
+    ui.locator("button.node[data-id='p|demo/app|5']").click()
+    assert ui.locator("button.node.focus").count() == 0 and ui.locator("button.node.dim").count() == 0 and "Chọn một thẻ" in text(ui, "#board-detail")
+
+
+def test_cards_work_from_the_keyboard(ui):
+    board(ui)
+    ui.locator("button.node[data-id='w|demo/app|2']").focus()
+    ui.keyboard.press("Enter")
+    assert ui.get_attribute("button.node.focus", "data-id") == "w|demo/app|2"
+    assert ui.evaluate("document.activeElement.dataset.id") == "w|demo/app|2"        # a redraw does not take the focus away
+
+
+def test_a_pull_request_from_a_fork_with_the_same_branch_name_is_not_joined_to_the_run(browser):
+    context, page = new_page(browser)
+    pulls = page.gh.routes[f"/repos/{REPO}/pulls"][1]
+    pulls[0]["head"]["repo"]["full_name"] = "someone/app"                                 # the same branch name, but in a fork
+    page.goto(PAGE_URL)
+    loaded(page)
+    assert page.eval_on_selector_all("#home-runs .pipe .fbox .t", "els => els.map(e => e.lastElementChild.textContent)") == ["Bắt đầu", "build", "Kết quả"]
+    board(page)
+    assert page.locator("button.node[data-kind='pr']").count() == 1 and page.locator("#edges path").count() == 9          # still on the board, with no line from the run
+    context.close()
+
+
+def test_a_failure_older_than_two_weeks_is_marked_old_and_no_longer_calls_for_the_person(browser):
+    context, page = new_page(browser)
+    old = run_of(90, 2, 3, "completed", "failure", 20 * 86400, "schedule", head=REPO)
+    page.gh.routes[f"/repos/{REPO}/actions/workflows/2/runs"] = (200, {"workflow_runs": [old]})
+    page.gh.routes[f"/repos/{REPO}/actions/runs"][1]["workflow_runs"] = [r for r in page.gh.routes[f"/repos/{REPO}/actions/runs"][1]["workflow_runs"] if r["id"] != 90] + [old]
+    page.goto(PAGE_URL)
+    loaded(page)
+    chips = counts(page, "home-chips")
+    assert chips["needs"] == 0 and chips["blocked"] == 2                                                  # the nightly and its run: nothing asks for the person
+    assert text(page, "#inbox-count") == "1" and "Nightly" not in text(page, "#needs-you")               # only the agent's pull request is left
+    open_tab(page, "repos")
+    assert "Lỗi cũ" in text(page, "#repo-grid") and "Có lỗi" not in text(page, "#repo-grid")
+    board(page)
+    assert "(cũ)" in page.locator("button.node[data-id='r|demo/app|90']").inner_text().lower()          # the chip is set in capitals
+    context.close()
+
+
+def test_the_filters_narrow_the_board_and_reset_brings_it_back(ui):
+    board(ui)
+    ui.fill("#f-q", "nightly")
+    wait(ui, "document.getElementById('f-count').textContent === '2 / 12'")
+    assert {b.get_attribute("data-kind") for b in ui.locator("#wavegrid button.node").all()} == {"workflow", "run"}
+    ui.fill("#f-q", "")
+    ui.select_option("#f-status", "review")
+    wait(ui, "document.getElementById('f-count').textContent === '1 / 12'")
+    assert counts(ui, "board-chips")["done"] == 3                                     # the counts still show the other statuses
+    ui.select_option("#f-status", "")
+    ui.select_option("#f-repo", REPO)
+    assert text(ui, "#f-count") == "12 / 12"
+    ui.click("#board-chips button[data-status='needs']")
+    assert text(ui, "#f-count") == "2 / 12" and ui.input_value("#f-status") == "needs"            # the chip and the list box agree
+    ui.click("#f-reset")
+    assert text(ui, "#f-count") == "12 / 12" and ui.input_value("#f-q") == "" and ui.input_value("#f-status") == ""
+
+
+def test_done_cards_can_be_shown_folded_or_hidden_and_the_board_can_be_grouped_by_repo(ui):
+    board(ui)
+    assert ui.locator("button.node.compact").count() == 3 and ui.get_attribute("#rest-collapse", "aria-pressed") == "true"
+    ui.click("#rest-show")
+    assert ui.locator("button.node.compact").count() == 0
+    ui.click("#rest-hide")
+    assert text(ui, "#f-count") == "9 / 12"
+    ui.click("#grp-repo")
+    wait(ui, "document.querySelectorAll('#wavegrid .wave').length === 1")
+    assert ui.inner_text("#wavegrid .wave > h3").replace("\n", " ").startswith("demo/app") and ui.locator("#edges path").count() == 0       # one column per repo, no lines
+    ui.click("#grp-flow")
+    wait(ui, "document.querySelectorAll('#edges path').length > 0")
+
+
+def test_text_from_github_stays_text_everywhere_it_is_drawn(ui):
+    assert ui.evaluate("window.__pwn") is None and ui.query_selector("#home-runs img") is None
+    assert EVIL + "CI" in text(ui, "#home-runs .pipe header")
+    board(ui)
+    assert ui.query_selector("#wavegrid img") is None and any(EVIL + "CI" in t for t in ui.eval_on_selector_all("#wavegrid .title", "els => els.map(e => e.textContent)"))
+    open_tab(ui, "repos")
+    assert EVIL + "CI" in text(ui, "details.wf .name") and ui.query_selector("#repo-grid img") is None
+    open_tab(ui, "agents")
+    assert "Fix <b>x</b>" in text(ui, "#agents-body") and ui.query_selector("#agents-body li b") is None
+
+
+# ---- Repo, Schedule, Agents ---------------------------------------------------------------------------------------------------
+
+def repos(page):
+    open_tab(page, "repos")
+    wait(page, "document.querySelector('#repo-grid .repo h3 a') !== null")
+
+
+def test_a_row_for_a_finished_workflow_loads_its_steps_when_opened(ui):
+    repos(ui)
+    row = ui.locator("details.wf", has_text="Nightly")
+    assert "Lỗi" in row.inner_text() and not [p for p in ui.gh.paths() if p.endswith("/runs/90/jobs")]            # nothing is read until it is opened
+    row.locator("summary").click()
+    wait(ui, "document.querySelectorAll('details.wf[open] .rows li.st-failed').length === 1")
+    assert [p for p in ui.gh.paths() if p.endswith("/runs/90/jobs")] and "Run e2e" in row.inner_text()
+    states = row.locator(".fbox").evaluate_all("els => els.map(e => e.className.split(' ').find(c => c.startsWith('st-')))")
+    assert states == ["st-done", "st-failed", "st-failed"]                                                       # start, the failed job, the result
+
+
+def test_a_workflow_crowded_out_of_the_repository_list_still_shows_its_own_history(ui):
+    repos(ui)
+    weekly = ui.locator("details.wf", has_text="Weekly scan")
+    assert "Thành công" in weekly.inner_text() and "Chưa thấy lượt chạy" not in weekly.inner_text()
+    assert [p for p in ui.gh.paths() if p.endswith("/actions/workflows/3/runs")]
+    nightly = ui.locator("details.wf", has_text="Nightly")
+    assert nightly.locator(".spark").get_attribute("aria-label") == "2 lượt gần nhất: 1 thành công, 1 lỗi"          # run 90 came from both lists and counts once
+    assert nightly.locator(".spark").get_attribute("role") == "img"
+
+
+def test_the_schedule_is_read_from_the_workflow_file_and_shown_in_words_and_on_the_week(ui):
+    repos(ui)
+    assert any("hằng ngày 18:00 UTC" in t for t in ui.eval_on_selector_all(".sched", "els => els.map(e => e.textContent)"))
+    assert "0 18 * * * (UTC)" in ui.eval_on_selector_all(".sched", "els => els.map(e => e.getAttribute('title'))")
+    open_tab(ui, "schedule")
+    assert ui.locator("#week .day li", has_text="Nightly").count() >= 6                  # one a day for the week
+
+
+def test_the_week_has_a_column_for_every_day_the_next_seven_days_touch(browser):
+    """Seven times 24 hours from Sunday midday end on the next Sunday: its 01:30 run needs a column of its own, not a silent drop."""
+    context, page = new_page(browser, tz="UTC")
+    page.clock.set_fixed_time(dt.datetime(2026, 10, 18, 12, 0, tzinfo=dt.timezone.utc))
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.click("#demo")
+    open_tab(page, "schedule")
+    wait(page, "document.querySelectorAll('#week .day').length > 0")
+    assert page.locator("#week .day").count() == 8
+    last = page.locator("#week .day").nth(7).inner_text()
+    assert "25-10" in last and "Deploy docs" in last and "01:30" in last
+    assert "Hôm nay" in page.locator("#week .day").nth(0).inner_text()
+    context.close()
+
+
+def test_agents_are_guessed_from_names_and_the_declared_ones_are_listed(ui):
+    open_tab(ui, "agents")
+    body = text(ui, "#agents-body")
+    assert "architect" in body and "README" not in body and "sub" not in body.split("agents/:")[1].split("\n")[0]        # only .md files
+    assert "claude" in body and "#5" in body and "suy đoán theo tên" in text(ui, "#view-agents")
+
+
+def test_an_office_snapshot_is_read_in_the_browser_and_kept_nowhere(ui, tmp_path):
+    open_tab(ui, "agents")
+    snap = {"version": 1, "mode": "claude", "now": time.time(), "live": True, "requirement": {"id": "REQ-9", "tier": "T2", "strategy": "main_with_architect_and_reviewer"},
+            "progress": {"pct": 50, "agents": 2, "total": 2, "running": 1, "done": 1, "blocked": 0}, "phase": {"steps": ["analysis", "verify"], "current": "verify"},
+            "agents": {"x": {"id": "x", "state": "working", "task": EVIL, "progress": 0.4, "model": "sonnet", "tokens": 1200}}}
+    good = Path(tmp_path) / "snapshot.json"
+    good.write_text(json.dumps(snap), encoding="utf-8")
+    seen = len(ui.seen)
+    ui.set_input_files("#office-file", str(good))
+    wait(ui, "document.querySelector('.oa') !== null")
+    assert "REQ-9" in text(ui, "#office-body") and EVIL in text(ui, ".oa") and ui.query_selector("#office-body img") is None and ui.evaluate("window.__pwn") is None
+    assert len(ui.seen) == seen                                                          # the file went nowhere
+    assert "REQ-9" not in json.dumps(ui.evaluate("() => Object.entries(window.localStorage)"))
+    bad = Path(tmp_path) / "other.json"
+    bad.write_text(json.dumps({**snap, "version": 2}), encoding="utf-8")
+    ui.set_input_files("#office-file", str(bad))
+    wait(ui, "document.getElementById('office-msg').className.includes('bad')")
+    assert "version 1" in text(ui, "#office-msg") and "REQ-9" in text(ui, "#office-body")            # the good one stays
+    notjson = Path(tmp_path) / "x.json"
+    notjson.write_text("not json", encoding="utf-8")
+    ui.set_input_files("#office-file", str(notjson))
+    wait(ui, "document.getElementById('office-msg').textContent.includes('không phải JSON')")
+
+
+# ---- Health and the live indicator ---------------------------------------------------------------------------------------------
+
+def test_health_shows_each_repo_the_quota_and_how_many_requests_were_made(ui):
+    open_tab(ui, "health")
+    wait(ui, "document.getElementById('quota').max === 5000")
+    assert ui.get_attribute("#quota", "value") == "4990" and "4.990/5.000" in text(ui, "#health-rate")
+    assert f"{len(ui.gh.requests):,}".replace(",", ".") in text(ui, "#health-calls") and "tắt" in text(ui, "#health-calls")
+    row = text(ui, "#health-rows")
+    assert "demo/app" in row and "Có lỗi" in row and "3 workflow, 1 lỗi" in row
+
+
+def test_the_live_indicator_says_how_the_page_is_refreshing(browser):
+    context, page = new_page(browser, interval=30)
+    page.goto(PAGE_URL)
+    loaded(page)
+    assert text(page, "#live-text") == "thủ công" and "Cần token" in page.get_attribute("#live", "title")          # an interval but no token: it cannot
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('live-text').textContent === 'live'")
+    assert "is-live" in page.get_attribute("#live", "class") and "30 giây" in page.get_attribute("#live", "title")
+    page.click("#demo")
+    wait(page, "document.getElementById('live-text').textContent === 'mẫu'")
+    context.close()
+
+
+# ---- the token -----------------------------------------------------------------------------------------------------------------
+
+def test_the_token_goes_only_into_one_header_and_is_kept_nowhere(ui):
+    open_tab(ui, "settings")
+    ui.gh.requests.clear()
+    ui.fill("#token", TOKEN)
+    ui.press("#token", "Tab")
+    wait(ui, "document.getElementById('connect-msg').className.includes('ok')")
+    deadline = time.monotonic() + 6
+    while len(ui.gh.requests) < 12 and time.monotonic() < deadline:
+        ui.wait_for_timeout(100)
+    sent = ui.gh.requests
+    assert len(sent) >= 12 and all(r["method"] == "GET" and r["headers"].get("authorization") == "Bearer " + TOKEN for r in sent)
+    assert all(r["path"].startswith("/repos/") for r in sent)
+    stores = ui.evaluate("() => ({ local: Object.entries(window.localStorage), session: Object.keys(window.sessionStorage), cookie: document.cookie, body: document.body.innerText })")
+    assert TOKEN not in json.dumps(stores) and stores["session"] == [] and stores["cookie"] == "" and ui.context.cookies() == []
+    assert TOKEN not in ui.url and ui.input_value("#token") == TOKEN and "5.000" in text(ui, "#rate")
+    ui.gh.requests.clear()
+    ui.click("#forget")
+    wait(ui, "document.getElementById('connect-msg').textContent.includes('quên')")
+    deadline = time.monotonic() + 6
+    while len(ui.gh.requests) < 12 and time.monotonic() < deadline:
+        ui.wait_for_timeout(100)
+    assert ui.input_value("#token") == "" and ui.gh.requests and all("authorization" not in r["headers"] for r in ui.gh.requests)
+
+
+def test_a_private_repo_is_unreadable_without_a_token_and_forgetting_the_token_drops_what_it_loaded(browser):
+    context, page = new_page(browser)
+    secret = app_routes()
+    page.gh.routes = {path: (404, {"message": "Not Found"}) for path in secret}
+    page.goto(PAGE_URL)
+    open_tab(page, "repos")
+    wait(page, "document.querySelector('.repo p.bad') !== null")
+    assert "private hoặc sai tên" in text(page, ".repo p.bad")
+    page.gh.routes = secret                                                              # with a token the same repo answers
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    open_tab(page, "home")
+    wait(page, "document.querySelector('#home-runs .pipe') !== null")
+    page.gh.routes = {path: (404, {"message": "Not Found"}) for path in secret}
+    open_tab(page, "settings")
+    page.click("#forget")
+    open_tab(page, "home")
+    wait(page, "document.querySelector('#home-runs .pipe') === null")                    # what the token fetched is gone from the page
+    open_tab(page, "repos")
+    wait(page, "document.querySelector('.repo p.bad') !== null")
+    context.close()
+
+
+def test_a_page_served_from_github_io_never_sends_a_token(browser):
+    context = browser.new_context()
+    gh = Github()
+    context.route("https://api.github.com/**", gh.handle)
+    context.route("https://someone.github.io/**", lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8", body=sync_csp.PAGE.read_text(encoding="utf-8")))
+    page = context.new_page()
+    page.goto("https://someone.github.io/ui/board.html")
+    open_tab(page, "settings")
+    assert page.is_visible("#origin-warning") and page.is_disabled("#token")
+    page.evaluate("document.getElementById('token').disabled = false; document.getElementById('token').value = 'github_pat_x';"
+                  "document.getElementById('token').dispatchEvent(new Event('change'))")
+    page.wait_for_timeout(500)
+    assert gh.requests and all("authorization" not in r["headers"] for r in gh.requests)          # a token forced into the field is not used
+    context.close()
+
+
+def test_forgetting_the_token_also_clears_the_account_list_the_token_loaded(browser):
+    context, page = new_page(browser)
+    page.gh.routes = {**app_routes(), "/user/repos": (200, [{"full_name": "me/secret-private", "owner": {"login": "me"}, "private": True, "pushed_at": iso(60)}])}
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    page.click("#pick")
+    page.fill("#pick-owner", "me")
+    page.click("#pick-load")
+    wait(page, "document.querySelectorAll('#pick-list input').length === 1")
+    assert "secret-private" in text(page, "#pick-list")
+    page.click("details.io summary")
+    page.click("#export")
+    assert page.input_value("#io") != ""
+    page.click("#forget")
+    wait(page, "document.getElementById('connect-msg').textContent.includes('quên')")
+    assert page.locator("#pick-list li").count() == 0 and page.input_value("#io") == "" and "secret-private" not in text(page, "body")
+    context.close()
+
+
+# ---- repositories ---------------------------------------------------------------------------------------------------------------
+
+def test_a_wrong_name_sends_nothing_and_a_right_one_is_linked_saved_and_removable(ui):
+    open_tab(ui, "settings")
+    before = len(ui.gh.requests)
+    ui.fill("#add-repo", "not a repo")
+    ui.click("#add")
+    assert "chủ/tên" in text(ui, "#link-msg") and len(ui.gh.requests) == before
+    ui.fill("#add-repo", "https://github.com/demo/other.git")
+    ui.press("#add-repo", "Enter")
+    wait(ui, "document.querySelectorAll('.chip').length === 2")
+    deadline = time.monotonic() + 6
+    while "/repos/demo/other" not in ui.gh.paths() and time.monotonic() < deadline:
+        ui.wait_for_timeout(50)
+    assert "/repos/demo/other" in ui.gh.paths()
+    open_tab(ui, "repos")
+    wait(ui, "document.querySelectorAll('#repo-grid .repo').length === 2 && document.querySelector('#repo-grid .repo p.bad') !== null")
+    assert "Không thấy repo" in text(ui, "#repo-grid .repo p.bad")
+    open_tab(ui, "settings")
+    ui.fill("#add-repo", "DEMO/app")
+    ui.click("#add")
+    assert "đã được liên kết" in text(ui, "#link-msg") and ui.locator(".chip").count() == 2            # the same repo in other letters is the same repo
+    assert ui.evaluate(f"() => JSON.parse(window.localStorage.getItem('{STORE_KEY}')).repos") == ["demo/app", "demo/other"]
+    ui.reload()
+    open_tab(ui, "settings")
+    wait(ui, "document.querySelectorAll('.chip').length === 2")                                          # it was saved
+    ui.click("button[aria-label='Bỏ liên kết demo/other']")
+    wait(ui, "document.querySelectorAll('.chip').length === 1")
+    assert ui.evaluate(f"() => JSON.parse(window.localStorage.getItem('{STORE_KEY}')).repos") == ["demo/app"]
+    ui.reload()
+    open_tab(ui, "settings")
+    wait(ui, "document.querySelectorAll('.chip').length === 1")
+    assert text(ui, ".chip").startswith("demo/app")
+
+
+@pytest.mark.parametrize("status,body,words", [
+    (403, {"message": "You have exceeded a secondary rate limit"}, "giới hạn tốc độ"), (429, {"message": "Too many requests: rate limit"}, "giới hạn tốc độ"),
+    (403, {"message": "Resource not accessible by personal access token"}, "token thiếu quyền"), (401, {"message": "Bad credentials"}, "Token sai"), (500, None, "mã 500")])
+def test_each_refusal_is_told_apart(browser, status, body, words):
+    context, page = new_page(browser)
+    page.gh.routes = {f"/repos/{REPO}": (status, body)}
+    page.goto(PAGE_URL)
+    open_tab(page, "repos")
+    wait(page, "document.querySelector('.repo p.bad') !== null")
+    assert words in text(page, ".repo p.bad") and page.locator(".repo button", has_text="Thử lại").count() == 1
+    context.close()
+
+
+def test_a_refused_read_with_no_quota_left_says_when_it_comes_back(browser):
+    context, page = new_page(browser)
+    page.gh.remaining = 0
+    page.gh.routes = {f"/repos/{REPO}": (403, {"message": "API rate limit exceeded"})}
+    page.goto(PAGE_URL)
+    open_tab(page, "repos")
+    wait(page, "document.querySelector('.repo p.bad') !== null")
+    assert "Hết hạn mức GitHub" in text(page, ".repo p.bad") and "token chỉ-đọc" in text(page, ".repo p.bad")
+    context.close()
+
+
+def test_repos_can_be_picked_from_an_account(browser):
+    context, page = new_page(browser, repos=())
+    page.gh.routes = {"/users/demo/repos": (200, [{"full_name": "demo/app", "owner": {"login": "demo"}, "private": False, "pushed_at": iso(60)},
+                                                  {"full_name": "demo/tool", "owner": {"login": "demo"}, "private": False, "pushed_at": iso(600)},
+                                                  {"full_name": "bad name/x y", "owner": {"login": "demo"}}]), **{k: v for k, v in app_routes("demo/tool").items()}}
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.click("#pick")
+    page.fill("#pick-owner", "demo")
+    page.click("#pick-load")
+    wait(page, "document.querySelectorAll('#pick-list input').length === 2")                              # the malformed name is not offered
+    page.check("#pick-list label >> nth=1 >> input")
+    page.click("#pick-add")
+    wait(page, "document.querySelectorAll('.chip').length === 1")
+    assert text(page, ".chip").startswith("demo/tool")
+    context.close()
+
+
+def test_the_list_can_be_exported_and_added_from_text(ui):
+    open_tab(ui, "settings")
+    ui.click("details.io summary")
+    ui.click("#export")
+    assert json.loads(ui.input_value("#io")) == {"repos": ["demo/app"]}
+    ui.fill("#io", "demo/a\nhttps://github.com/demo/b, nonsense")
+    ui.click("#import")
+    wait(ui, "document.querySelectorAll('.chip').length === 3")
+    assert "bỏ qua 1 mục không hợp lệ" in text(ui, "#link-msg")
+
+
+# ---- cost: the page asks GitHub as little as it can --------------------------------------------------------------------------------
+
+def test_a_second_look_asks_only_if_changed_and_a_not_modified_answer_changes_nothing(ui):
+    before = ui.inner_text("#home-runs")
+    open_tab(ui, "settings")
+    count, answered = len(ui.gh.requests), ui.gh.not_modified
+    ui.click("#refresh")
+    deadline = time.monotonic() + 8
+    while len(ui.gh.requests) < count + 12 and time.monotonic() < deadline:               # repo, runs, workflows, pulls, jobs, three workflow files, agents, three histories
+        ui.wait_for_timeout(100)
+    ui.wait_for_timeout(300)
+    asked = ui.gh.conditional(count)
+    assert len(asked) == 12 and all(asked)                                                 # every one of them was conditional ...
+    assert ui.gh.not_modified - answered == len(asked)                                     # ... and every one was answered "not modified"
+    open_tab(ui, "home")
+    assert re.sub(r"\d+ (giây|phút)", "", ui.inner_text("#home-runs")) == re.sub(r"\d+ (giây|phút)", "", before) and ui.query_selector("#home-runs .fbox") is not None
+
+
+def test_out_of_quota_the_page_stops_sending_until_the_reset(browser):
+    repos_ = [f"demo/r{i}" for i in range(6)]
+    context, page = new_page(browser, repos=repos_)
+    page.gh.remaining = 0
+    page.gh.routes = {f"/repos/{r}": (403, {"message": "API rate limit exceeded"}) for r in repos_}
+    page.goto(PAGE_URL)
+    open_tab(page, "repos")
+    wait(page, "document.querySelectorAll('.repo p.bad').length === 6")
+    assert len(page.gh.requests) == 12                                            # three repos at a time, four calls each; the other three were never sent
+    assert all("Hết hạn mức GitHub" in t for t in page.eval_on_selector_all(".repo p.bad", "els => els.map(e => e.textContent)"))
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)                                                   # a new token is a new quota: the page asks again
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('connect-msg').className.includes('ok')")
+    page.wait_for_timeout(300)
+    assert len(page.gh.requests) > 12
+    context.close()
+
+
+def test_auto_refresh_pauses_when_the_quota_runs_low_and_goes_on_when_it_recovers(browser):
+    context, page = new_page(browser, interval=30)
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    page.gh.remaining = 100                                                      # of 5000: below the 5 % the page keeps back
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('rate').textContent.includes('tạm dừng')")
+    assert text(page, "#live-text") == "tạm dừng"
+    seen = quiet(page)
+    page.clock.run_for(65_000)
+    page.wait_for_timeout(400)
+    assert len(page.gh.requests) == seen                                         # two timer ticks, nothing sent
+    page.gh.remaining = 4000
+    page.click("#refresh")                                                       # the person asks: this goes through and reads the new quota
+    wait(page, "document.getElementById('rate').textContent.includes('4.000')")
+    assert "tạm dừng" not in text(page, "#rate") and text(page, "#live-text") == "live"
+    seen = quiet(page)
+    page.clock.run_for(31_000)
+    deadline = time.monotonic() + 6
+    while len(page.gh.requests) == seen and time.monotonic() < deadline:
+        page.wait_for_timeout(100)
+    assert len(page.gh.requests) > seen                                          # and the timer works again by itself
+    context.close()
+
+
+# ---- the shell: tabs, looks, demo, small screens, frames ------------------------------------------------------------------------------
+
+def test_tabs_show_one_screen_at_a_time_and_work_from_the_keyboard(ui):
+    assert [ui.get_attribute(f"#tab-{v}", "aria-selected") for v in VIEWS] == ["true"] + ["false"] * 7
+    assert [ui.is_visible(f"#view-{v}") for v in VIEWS] == [True] + [False] * 7
+    ui.focus("#tab-home")
+    ui.keyboard.press("ArrowRight")
+    assert ui.get_attribute("#tab-board", "aria-selected") == "true" and ui.is_visible("#view-board") and not ui.is_visible("#view-home")
+    ui.keyboard.press("End")
+    assert ui.get_attribute("#tab-settings", "aria-selected") == "true" and ui.is_visible("#view-settings")
+    ui.keyboard.press("ArrowRight")                                                  # wraps round
+    assert ui.get_attribute("#tab-home", "aria-selected") == "true"
+    ui.keyboard.press("ArrowLeft")
+    assert ui.get_attribute("#tab-settings", "aria-selected") == "true"
+    ui.keyboard.press("Home")
+    assert ui.get_attribute("#tab-home", "aria-selected") == "true" and ui.is_visible("#view-home")
+    ui.keyboard.press("End")
+    assert [ui.get_attribute(f"#tab-{v}", "tabindex") for v in VIEWS] == ["-1"] * 7 + ["0"]                  # only the current tab is a stop for Tab
+
+
+def test_four_looks_and_three_modes_are_chosen_from_a_panel_and_remembered(browser):
+    context, page = new_page(browser, scheme="dark")
+    page.goto(PAGE_URL)
+    root = lambda: page.evaluate("() => [document.documentElement.dataset.theme, document.documentElement.dataset.eff]")      # noqa: E731
+    assert root() == ["neon", "dark"] and page.is_hidden("#theme-pop")
+    page.click("#theme-btn")
+    assert page.is_visible("#theme-pop") and page.get_attribute("#theme-btn", "aria-expanded") == "true"
+    assert page.locator("#theme-pop [data-pick-theme]").count() == 4 and page.get_attribute("[data-pick-theme=neon]", "aria-pressed") == "true"
+    page.click("[data-pick-theme=candy]")
+    assert root() == ["candy", "dark"] and page.get_attribute("[data-pick-theme=candy]", "aria-pressed") == "true" and page.get_attribute("[data-pick-theme=neon]", "aria-pressed") == "false"
+    page.click("[data-pick-mode=light]")
+    assert root() == ["candy", "light"]
+    page.click("[data-pick-mode=auto]")
+    assert root() == ["candy", "dark"]                                                # auto follows the system
+    page.keyboard.press("Escape")
+    assert page.is_hidden("#theme-pop") and page.evaluate("document.activeElement.id") == "theme-btn"
+    saved = page.evaluate(f"() => JSON.parse(window.localStorage.getItem('{STORE_KEY}'))")
+    assert saved["theme"] == "candy" and saved["mode"] == "auto" and "token" not in json.dumps(saved)
+    page.reload()
+    assert root() == ["candy", "dark"]                                                # remembered
+    page.click("#theme-btn")
+    page.mouse.click(10, 500)                                                         # a click elsewhere closes it
+    assert page.is_hidden("#theme-pop")
+    context.close()
+
+
+def test_auto_follows_a_light_system_and_an_explicit_mode_ignores_it(browser):
+    context, page = new_page(browser, scheme="light")
+    page.goto(PAGE_URL)
+    assert page.evaluate("document.documentElement.dataset.eff") == "light"
+    page.click("#theme-btn")
+    page.click("[data-pick-mode=dark]")
+    assert page.evaluate("document.documentElement.dataset.eff") == "dark"
+    page.emulate_media(color_scheme="light")
+    assert page.evaluate("document.documentElement.dataset.eff") == "dark"
+    context.close()
+    context, page = new_page(browser, scheme="dark", theme="aurora", mode="light")                    # a saved choice wins over the system at load
+    page.goto(PAGE_URL)
+    assert page.evaluate("() => [document.documentElement.dataset.theme, document.documentElement.dataset.eff]") == ["aurora", "light"]
+    context.close()
+
+
+def test_every_look_keeps_the_text_readable(browser):
+    """The colour of the text against its background, in all eight combinations, on the two surfaces that carry most text (page and card)."""
+    def lum(rgb):
+        c = [x / 255 for x in rgb]
+        c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+    def ratio(a, b):
+        la, lb = sorted((lum(a), lum(b)), reverse=True)
+        return (la + 0.05) / (lb + 0.05)
+
+    for theme in ("neon", "classic", "aurora", "candy"):
+        for mode in ("dark", "light"):
+            context, page = new_page(browser, theme=theme, mode=mode)
+            page.goto(PAGE_URL)
+            open_tab(page, "settings")
+            got = page.evaluate("""() => {
+              const px = (el, prop) => { const c = document.createElement('canvas').getContext('2d'); c.fillStyle = getComputedStyle(el)[prop]; c.fillRect(0, 0, 1, 1); return Array.from(c.getImageData(0, 0, 1, 1).data.slice(0, 3)); };
+              const card = document.querySelector('#connect'), muted = document.querySelector('#connect p.muted'), button = document.getElementById('refresh');
+              const probe = document.createElement('span'); probe.textContent = 'x'; probe.style.color = 'var(--accent)'; card.append(probe);
+              const out = { ink: px(card, 'color'), card: px(card, 'backgroundColor'), muted: px(muted, 'color'), accent: px(probe, 'color'), onButton: px(button, 'color'), button: px(button, 'backgroundColor') };
+              probe.remove();
+              return out;
+            }""")
+            assert ratio(got["ink"], got["card"]) >= 7, (theme, mode, got)                      # body text on a card
+            assert ratio(got["muted"], got["card"]) >= 4.5, (theme, mode, got)                  # the quieter text still passes AA
+            assert ratio(got["accent"], got["card"]) >= 4.5, (theme, mode, got)                 # links and the current tab
+            assert ratio(got["onButton"], got["button"]) >= 4.5, (theme, mode, got)             # the label on the main button
+            context.close()
+
+
+def test_the_status_words_and_glyphs_are_readable_in_every_look_and_on_a_folded_card(browser):
+    """A status word is drawn in its colour mixed toward the text colour: the raw amber of "needs you" on a white card is about 2:1."""
+    def lum(rgb):
+        c = [x / 255 for x in rgb[:3]]
+        c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+    def ratio(a, b):
+        la, lb = sorted((lum(a), lum(b)), reverse=True)
+        return (la + 0.05) / (lb + 0.05)
+
+    def over(top, base, alpha):
+        return [top[i] * alpha + base[i] * (1 - alpha) for i in range(3)]
+
+    probe = """() => {
+      const px = (el, prop) => { const c = document.createElement('canvas').getContext('2d'); c.fillStyle = getComputedStyle(el)[prop]; c.clearRect(0, 0, 1, 1); c.fillRect(0, 0, 1, 1); return Array.from(c.getImageData(0, 0, 1, 1).data); };
+      const out = { cards: [], boxes: [], rows: [] }, grid = document.getElementById('wavegrid'), home = document.getElementById('view-home');
+      for (const folded of [false, true]) for (const s of ['needs', 'running', 'review', 'under', 'ready', 'blocked', 'done']) {
+        const b = document.createElement('button'); b.className = 'node s-' + s + (folded ? ' compact' : '');
+        const c = document.createElement('span'); c.className = 'chipst'; c.textContent = 'x'; b.append(c); grid.append(b);
+        out.cards.push({ s, folded, fg: px(c, 'color'), bg: px(b, 'backgroundColor'), opacity: Number(getComputedStyle(b).opacity) }); b.remove();
+      }
+      const panel = document.createElement('div'); panel.className = 'panel'; home.append(panel);
+      out.panel = px(panel, 'backgroundColor');
+      const rows = document.createElement('div'); rows.className = 'rows'; panel.append(rows);
+      for (const s of ['done', 'running', 'waiting', 'failed', 'queued', 'skipped', 'cancelled']) {
+        const f = document.createElement('div'); f.className = 'fbox st-' + s; const t = document.createElement('div'); t.className = 't'; const g = document.createElement('span'); g.className = 'g'; g.textContent = 'x'; t.append(g); f.append(t); panel.append(f);
+        out.boxes.push({ s, fg: px(g, 'color'), bg: px(f, 'backgroundColor') });
+        const li = document.createElement('li'); li.className = 'st-' + s; const w = document.createElement('span'); w.className = 'glyph'; w.textContent = 'x'; li.append(w); rows.append(li);
+        out.rows.push({ s, fg: px(w, 'color'), bg: px(li, 'backgroundColor') });
+      }
+      panel.remove();
+      return out;
+    }"""
+    for theme in ("neon", "classic", "aurora", "candy"):
+        for mode in ("dark", "light"):
+            context, page = new_page(browser, theme=theme, mode=mode)
+            page.goto(PAGE_URL)
+            open_tab(page, "board")
+            got = page.evaluate(probe)
+            card = got["panel"][:3]
+            for c in got["cards"]:
+                text_on_card = over(c["fg"], card, c["opacity"])                       # a folded card is drawn at reduced opacity over the board's panel
+                assert ratio(text_on_card, over(c["bg"], card, c["opacity"])) >= 4.5, (theme, mode, c)
+            for kind in ("boxes", "rows"):
+                for g in got[kind]:
+                    behind = over(g["bg"], card, g["bg"][3] / 255)                     # an unstarted box has no fill: the panel shows through
+                    assert ratio(g["fg"], behind) >= 4.5, (theme, mode, kind, g)
+            context.close()
+
+
+def test_the_demo_contacts_nobody_shows_every_screen_and_leaving_it_brings_the_list_back(ui):
+    open_tab(ui, "settings")
+    seen = len(ui.seen)
+    ui.click("#demo")
+    open_tab(ui, "home")
+    wait(ui, "document.querySelectorAll('#home-runs .pipe').length === 4")
+    assert ui.is_visible("#banner") and len(ui.seen) == seen and text(ui, "#live-text") == "mẫu"
+    assert "Deploy production" in text(ui, "#home-runs") and "chờ duyệt" in text(ui, "#home-runs") and "lần thử thứ 2" in text(ui, "#home-runs")
+    board(ui)
+    assert text(ui, "#f-count") == "38 / 38"
+    open_tab(ui, "repos")
+    assert ui.locator("#repo-grid .repo").count() == 4
+    open_tab(ui, "agents")
+    assert "REQ-031" in text(ui, "#office-body")
+    open_tab(ui, "settings")
+    assert ui.is_disabled("#add")
+    ui.click("#demo")
+    wait(ui, "document.getElementById('banner').hidden")
+    assert ui.locator(".chip").count() == 1 and text(ui, ".chip").startswith("demo/app") and ui.is_enabled("#add")
+    assert ui.evaluate(f"() => JSON.parse(window.localStorage.getItem('{STORE_KEY}')).repos") == ["demo/app"]      # the demo never overwrote the saved list
+
+
+def test_a_look_chosen_while_the_demo_is_on_is_remembered_and_the_demo_names_are_not(ui):
+    open_tab(ui, "settings")
+    ui.click("#demo")
+    open_tab(ui, "home")
+    ui.click("#theme-btn")
+    ui.click("[data-pick-theme=aurora]")
+    ui.click("[data-pick-mode=light]")
+    ui.keyboard.press("Escape")
+    saved = ui.evaluate(f"() => JSON.parse(window.localStorage.getItem('{STORE_KEY}'))")
+    assert saved["theme"] == "aurora" and saved["mode"] == "light" and saved["repos"] == ["demo/app"]          # the real list, not demo/web-app and the others
+    ui.reload()
+    assert ui.evaluate("() => [document.documentElement.dataset.theme, document.documentElement.dataset.eff]") == ["aurora", "light"]
+
+
+@pytest.mark.parametrize("width", [320, 390, 768])
+def test_nothing_scrolls_sideways_on_a_phone_or_tablet_in_any_screen(browser, width):
+    context, page = new_page(browser, width=width)
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.click("#demo")
+    for view in VIEWS:
+        open_tab(page, view)
+        if view == "home":
+            wait(page, "document.querySelectorAll('#home-runs .pipe').length === 4")
+        if view == "board":
+            wait(page, "document.querySelectorAll('#edges path').length > 0")
+        if view == "repos":
+            for summary in page.query_selector_all("details.wf > summary"):
+                summary.click()
+        page.wait_for_timeout(100)
+        sizes = page.evaluate("() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth })")
+        assert sizes["scroll"] <= sizes["client"], (view, sizes)
+    context.close()
+
+
+def test_the_page_refuses_to_run_inside_a_frame(browser, tmp_path):
+    outer = Path(tmp_path) / "outer.html"
+    outer.write_text(f'<!doctype html><iframe id="f" src="{PAGE_URL}" width="600" height="400"></iframe>', encoding="utf-8")
+    context = browser.new_context()
+    serve(context)
+    page = context.new_page()
+    page.goto(outer.as_uri())
+    page.wait_for_timeout(300)
+    assert "không chạy trong khung nhúng" in page.frame_locator("#f").locator("html").inner_text()
+    assert page.frame_locator("#f").locator("#refresh").count() == 0
+    context.close()
+
+
+def test_the_content_security_policy_really_blocks_injected_script(ui):
+    ui.evaluate("""() => { const s = document.createElement('script'); s.textContent = 'window.__ran = 1'; document.body.append(s); }""")
+    assert ui.evaluate("window.__ran") is None                                           # the hash allows our script and nothing else
+    ui.evaluate("() => { fetch('https://example.com/x').catch(() => { window.__blocked = true; }); }")
+    wait(ui, "window.__blocked === true")
+    assert not [u for u in ui.seen if "example.com" in u]
+
+
+def test_a_refresh_does_not_take_the_focus_or_fold_what_the_person_opened(ui):
+    repos(ui)
+    summary = ui.locator("details.wf summary >> nth=0")
+    summary.focus()
+    ui.keyboard.press("Enter")
+    assert ui.evaluate("document.querySelector('details.wf').open") is True
+    assert ui.evaluate("document.activeElement.tagName") == "SUMMARY"
+    job = ui.locator("details.wf[open] .rows details >> nth=0")
+    job.locator("summary").click()                                                   # fold a job the page had opened
+    folded = job.evaluate("e => e.open")
+    open_tab(ui, "settings")
+    ui.click("#refresh")
+    ui.wait_for_timeout(600)
+    open_tab(ui, "repos")
+    assert ui.evaluate("document.querySelector('details.wf').open") is True
+    assert ui.locator("details.wf[open] .rows details >> nth=0").evaluate("e => e.open") == folded      # a folded row stays folded after the refresh
