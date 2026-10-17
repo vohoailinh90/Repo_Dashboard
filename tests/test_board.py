@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 
@@ -32,7 +33,7 @@ FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normIn
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel")
 
 
 def _node(cases: list) -> list:
@@ -265,6 +266,13 @@ def test_agent_activity_lists_ai_runs_and_agent_or_bot_pull_requests_only():
 
 # ---- cron -------------------------------------------------------------------------------------------------------------------
 
+def _zone(name):
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        pytest.skip(f"no time zone database here for {name}")
+
+
 def _py_field(text, lo, hi, names=(), base=0):
     """A second, independent reading of one cron field."""
     out = set()
@@ -288,8 +296,9 @@ def _py_field(text, lo, hi, names=(), base=0):
     return out
 
 
-def _py_occurrences(expr, start, end, limit):
-    """Every matching minute in (start, end), found by looking at each minute in turn (vixie cron: a day must match both day fields when either starts with `*`, either one when both are restricted)."""
+def _py_occurrences(expr, start, end, limit, zone=None):
+    """Every matching minute in (start, end), found by looking at each minute in turn (vixie cron: a day must match both day fields when either starts with `*`, either one when both are restricted).
+    With a zone the fields are read on that zone's wall clock; a local time that happens twice (the clock put back) counts once, and one that never happens (the clock put forward) is never found."""
     f = expr.split()
     if len(f) != 5:
         return []
@@ -304,10 +313,12 @@ def _py_occurrences(expr, start, end, limit):
     t = t.replace(second=0, microsecond=0)
     if t <= start:
         t += dt.timedelta(minutes=1)
+    tz = _zone(zone) if zone else None
     while t < end and len(out) < limit:
-        wd = (t.weekday() + 1) % 7
-        day_ok = (t.day in dom and wd in dow) if (dom_any or dow_any) else (t.day in dom or wd in dow)       # `*` or `*/2` in either: both sets; two restricted: either
-        if t.month in month and day_ok and t.hour in hour and t.minute in minute:
+        w = t.astimezone(tz) if tz else t
+        wd = (w.weekday() + 1) % 7
+        day_ok = (w.day in dom and wd in dow) if (dom_any or dow_any) else (w.day in dom or wd in dow)       # `*` or `*/2` in either: both sets; two restricted: either
+        if not w.fold and w.month in month and day_ok and w.hour in hour and w.minute in minute:             # fold: the second pass through a repeated hour
             out.append(int(t.timestamp() * 1000))
         t += dt.timedelta(minutes=1)
     return out
@@ -783,3 +794,102 @@ def test_a_job_that_is_still_queued_never_opens_a_stage_even_when_github_gave_it
     assert [[j["name"] for j in stage] for stage in _one("inferStages", jobs)] == [["build"], ["test"], ["deploy"]]
     assert [[j["name"] for j in stage] for stage in _one("inferStages", [{**queued, "status": "pending"}, _job("build", 0, 10)])] == [["build"], ["deploy"]]
     assert [[j["name"] for j in stage] for stage in _one("inferStages", [{**queued, "status": "requested"}])] == [["deploy"]]
+
+
+# ---- schedules that name a time zone ------------------------------------------------------------------------------------------------
+
+ZONED = [("America/New_York", ["30 5 * * 1-5", "30 2 * * *", "30 1 * * *", "0 0 * * *", "15 */6 * * *", "0 9 8 * *", "0 3 * * 0"]),
+         ("Europe/London", ["30 1 * * *", "0 1 * * *", "30 0 * * *", "0 9 * * 1-5"]),
+         ("Australia/Sydney", ["30 2 * * *", "0 3 * * *", "0 9 * * 1"]),
+         ("Australia/Lord_Howe", ["15 2 * * *", "45 1 * * *", "0 9 * * *"]),                 # a clock change of half an hour
+         ("Asia/Kolkata", ["30 9 * * *", "0 0 * * 0"]), ("Asia/Tokyo", ["0 9 * * *", "59 23 * * *"]), ("America/Sao_Paulo", ["0 0 * * *"]), ("UTC", ["0 9 * * *"])]
+ZONED_WINDOWS = [(dt.datetime(2026, 3, 1, tzinfo=UTC), dt.datetime(2026, 4, 12, tzinfo=UTC)),           # US, EU and Australian clock changes of the northern spring
+                 (dt.datetime(2026, 10, 1, tzinfo=UTC), dt.datetime(2026, 11, 10, tzinfo=UTC))]         # and of the autumn
+
+
+def test_a_cron_in_a_time_zone_matches_a_minute_by_minute_oracle_across_clock_changes():
+    cases, expected = [], []
+    for zone, exprs in ZONED:
+        _zone(zone)
+        for expr in exprs:
+            for start, end in ZONED_WINDOWS:
+                cases.append(["occurrences", [f"CRON_TZ={zone} {expr}", int(start.timestamp() * 1000), int(end.timestamp() * 1000), 400]])
+                expected.append(_py_occurrences(expr, start, end, 400, zone))
+    for case, js, py in zip(cases, _node(cases), expected):
+        assert js == py, case
+    assert len(cases) == 46 and all(expected), "every comparison must have something to compare: an empty list on both sides would prove nothing"
+
+
+def _utc(*ms):
+    return [dt.datetime.fromtimestamp(m / 1000, UTC).strftime("%Y-%m-%dT%H:%MZ") for m in ms]
+
+
+def _ms(text):
+    return int(dt.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+
+
+def test_a_zone_moves_the_run_with_the_season_and_the_clock_change_hours_are_listed_once_or_not_at_all():
+    _zone("America/New_York")
+    nine = "CRON_TZ=America/New_York 0 9 * * *"
+    got = _node([["occurrences", [nine, _ms("2026-01-10T00:00Z"), _ms("2026-01-11T00:00Z"), 5]], ["occurrences", [nine, _ms("2026-07-10T00:00Z"), _ms("2026-07-11T00:00Z"), 5]]])
+    assert [_utc(*g) for g in got] == [["2026-01-10T14:00Z"], ["2026-07-10T13:00Z"]]                  # 09:00 is 14:00 UTC in winter and 13:00 UTC in summer
+    gap = _one("occurrences", "CRON_TZ=America/New_York 30 2 * * *", _ms("2026-03-07T00:00Z"), _ms("2026-03-11T00:00Z"), 10)
+    assert _utc(*gap) == ["2026-03-07T07:30Z", "2026-03-09T06:30Z", "2026-03-10T06:30Z"]              # the 8th has no 02:30: the clocks went from 02:00 to 03:00
+    twice = _one("occurrences", "CRON_TZ=America/New_York 30 1 * * *", _ms("2026-10-31T12:00Z"), _ms("2026-11-02T12:00Z"), 10)
+    assert _utc(*twice) == ["2026-11-01T05:30Z", "2026-11-02T06:30Z"]                                  # 01:30 happens twice on 1 November: once, the first
+    got = _node([["occurrences", ["CRON_TZ=Asia/Kolkata 30 9 * * *", _ms("2026-10-16T00:00Z"), _ms("2026-10-17T00:00Z"), 5]],
+                 ["occurrences", ["CRON_TZ=Australia/Lord_Howe 0 9 * * *", _ms("2026-06-10T00:00Z"), _ms("2026-06-11T00:00Z"), 5]],
+                 ["occurrences", ["CRON_TZ=Australia/Lord_Howe 0 9 * * *", _ms("2026-01-10T00:00Z"), _ms("2026-01-11T00:00Z"), 5]]])
+    assert [_utc(*g) for g in got] == [["2026-10-16T04:00Z"], ["2026-06-10T22:30Z"], ["2026-01-10T22:00Z"]]       # a half-hour zone; a zone that is 10:30 east in winter and 11 in summer
+    assert _one("nextOccurrence", "CRON_TZ=Asia/Tokyo 0 9 * * *", NOW) == _ms("2026-10-17T00:00Z")
+    assert _one("occurrences", "CRON_TZ=Asia/Tokyo 0 9 * * *", _ms("2026-10-17T00:00Z"), _ms("2026-10-18T00:00Z"), 5) == []       # nothing at the very start: the window is open at both ends
+
+
+def test_a_zone_the_browser_does_not_know_or_a_name_that_is_not_one_is_not_a_schedule():
+    names = ["America/New_York", "UTC", "Asia/Tokyo", "Etc/GMT+5", "Mars/Phobos", "+05:00", "05:00", "", "America/New York", "x" * 70, "a'b", "../x", "America/Argentina/Buenos_Aires/x/y", None, "Asia/Tokyo; rm"]
+    assert _node([["validZone", [n]] for n in names]) == [True, True, True, True, False, False, False, False, False, False, False, False, False, False, False]
+    got = _node([["parseCron", [e]] for e in ("CRON_TZ=Asia/Tokyo 0 9 * * *", "0 9 * * *", "CRON_TZ=Mars/Phobos 0 9 * * *", "CRON_TZ=Asia/Tokyo", "CRON_TZ=Asia/Tokyo 0 9 * *", "cron_tz=Asia/Tokyo 0 9 * * *", "CRON_TZ=+09:00 0 9 * * *")])
+    assert [g and g["tz"] for g in got] == ["Asia/Tokyo", None, None, None, None, None, None] and got[1] is not None
+
+
+def test_a_zoned_schedule_is_told_in_its_own_zone_and_a_plain_one_in_utc():
+    got = _node([["describeCron", [e]] for e in ("CRON_TZ=Asia/Tokyo 17 9 * * *", "0 1 * * 3,6", "CRON_TZ=Europe/London 30 8 * * 1-5", "CRON_TZ=Asia/Kolkata 5 * * * *", "CRON_TZ=Asia/Tokyo */20 * * * *", "CRON_TZ=Asia/Tokyo 0 0 1 */2 *")] +
+                 [["cronLabel", [e]] for e in ("CRON_TZ=Asia/Tokyo 17 9 * * *", "0 1 * * 3,6", "  5   4 * * 1  ", "not a cron")])
+    assert got == ["hằng ngày 09:17 Asia/Tokyo", "01:00 UTC, T4 T7", "08:30 Europe/London, T2 T3 T4 T5 T6", "mỗi giờ, phút 05 (Asia/Kolkata)", "mỗi 20 phút", "0 0 1 */2 * (Asia/Tokyo)",
+                   "17 9 * * * (Asia/Tokyo)", "0 1 * * 3,6 (UTC)", "5 4 * * 1 (UTC)", "not a cron"]
+
+
+def test_the_timezone_next_to_a_cron_is_read_in_every_way_yaml_can_say_it():
+    wf = """on:
+  schedule:
+    - cron: '30 5 * * 1-5'
+      timezone: 'America/New_York'
+    - timezone: Asia/Tokyo
+      cron: "0 9 * * *"
+    - cron: '0 1 * * 3'
+    - {cron: "15 4 * * *", timezone: "Europe/Paris"}
+    - cron: '0 2 * * *'
+      timezone: Mars/Phobos
+    - cron: 'CRON_TZ=Asia/Tokyo 0 3 * * *'
+  workflow_dispatch:
+jobs:
+  x:
+    steps:
+      - name: not a schedule
+        with:
+          timezone: Asia/Tokyo
+          cron: '0 7 * * *'
+"""
+    assert _one("extractCrons", wf) == ["CRON_TZ=America/New_York 30 5 * * 1-5", "CRON_TZ=Asia/Tokyo 0 9 * * *", "0 1 * * 3", "CRON_TZ=Europe/Paris 15 4 * * *"]
+    flow = "on:\n  schedule: [{cron: '0 1 * * *', timezone: 'Asia/Tokyo'}, {cron: \"0 2 * * *\"}, {cron: '0 3 * * *', timezone: Nowhere/Land}]\n"
+    assert _one("extractCrons", flow) == ["CRON_TZ=Asia/Tokyo 0 1 * * *", "0 2 * * *"]
+    shell = "on:\n  schedule:\n    - cron: '0 1 * * *'\njobs:\n  a:\n    steps:\n      - run: |\n          echo timezone: Asia/Tokyo\n"
+    assert _one("extractCrons", shell) == ["0 1 * * *"]                                                 # a line of a script is text, not YAML
+    assert _node([["extractCrons", [None]], ["extractCrons", [""]], ["extractCrons", ["on:\n  schedule:\n    - timezone: Asia/Tokyo\n"]]]) == [[], [], []]       # a zone with no cron is nothing
+
+
+def test_the_week_plan_and_the_count_follow_the_zone_of_the_schedule():
+    wf = {"id": 1, "name": "Tokyo morning", "path": ".github/workflows/t.yml", "state": "active", "runs": [], "crons": ["CRON_TZ=Asia/Tokyo 0 9 * * *", "0 1 * * *"]}
+    plan = _one("weekPlan", [_model(workflows=[wf])], NOW, 1)
+    assert [(_utc(i["ms"])[0], i["cron"]) for i in plan["items"]] == [("2026-10-17T00:00Z", "CRON_TZ=Asia/Tokyo 0 9 * * *"), ("2026-10-17T01:00Z", "0 1 * * *")]
+    assert _one("countScheduled", [_model(workflows=[wf])], NOW, NOW + 86400000) == 2

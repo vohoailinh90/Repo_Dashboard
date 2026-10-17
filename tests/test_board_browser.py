@@ -394,6 +394,22 @@ def test_the_schedule_is_read_from_the_workflow_file_and_shown_in_words_and_on_t
     assert ui.locator("#week .day li", has_text="Nightly").count() >= 6                  # one a day for the week
 
 
+def test_a_schedule_that_names_a_time_zone_is_shown_and_counted_in_that_zone(browser):
+    context, page = new_page(browser)                                                       # the browser is on Ho Chi Minh time (UTC+7, no clock changes)
+    page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/weekly.yml"] = (200, "on:\n  schedule:\n    - cron: '0 9 * * *'\n      timezone: 'Asia/Tokyo'\n")
+    page.goto(PAGE_URL)
+    loaded(page)
+    open_tab(page, "repos")
+    wait(page, "Array.from(document.querySelectorAll('.sched')).some((e) => e.textContent.includes('Asia/Tokyo'))")
+    sched = next(t for t in page.eval_on_selector_all(".sched", "els => els.map(e => e.textContent)") if "Asia/Tokyo" in t)
+    assert "hằng ngày 09:00 Asia/Tokyo" in sched and "07:00" in sched                      # 09:00 in Tokyo is 07:00 in Ho Chi Minh, every day of the year
+    assert "0 9 * * * (Asia/Tokyo)" in page.eval_on_selector_all(".sched", "els => els.map(e => e.getAttribute('title'))")
+    open_tab(page, "schedule")
+    runs = page.eval_on_selector_all("#week .day li", "els => els.filter(e => e.textContent.includes('Weekly scan')).map(e => e.textContent)")
+    assert len(runs) >= 6 and all("07:00" in r for r in runs)                              # one a day for the week, all at 07:00 local
+    context.close()
+
+
 def test_the_week_has_a_column_for_every_day_the_next_seven_days_touch(browser):
     """Seven times 24 hours from Sunday midday end on the next Sunday: its 01:30 run needs a column of its own, not a silent drop."""
     context, page = new_page(browser, tz="UTC")
@@ -551,6 +567,30 @@ def test_forgetting_the_token_also_clears_the_account_list_the_token_loaded(brow
     page.click("#forget")
     wait(page, "document.getElementById('connect-msg').textContent.includes('quên')")
     assert page.locator("#pick-list li").count() == 0 and page.input_value("#io") == "" and "secret-private" not in text(page, "body")
+    context.close()
+
+
+def test_a_list_still_on_its_way_when_the_token_is_forgotten_is_dropped_when_it_arrives(browser):
+    context, page = new_page(browser)
+    held = []
+    context.route("https://api.github.com/user/repos**", lambda route, request: route.fulfill(status=204, headers=PREFLIGHT) if request.method == "OPTIONS" else held.append(route))
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    page.click("#pick")
+    page.fill("#pick-owner", "me")
+    page.click("#pick-load")
+    deadline = time.monotonic() + 8
+    while not held and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert held and text(page, "#link-msg") == "Đang tải danh sách…"                       # the request is out and waiting, authenticated by the token
+    page.click("#forget")
+    wait(page, "document.getElementById('connect-msg').textContent.includes('quên')")
+    assert text(page, "#link-msg") == ""                                                    # "loading…" is not left standing for an answer that will never be used
+    held[0].fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps([{"full_name": "me/secret-private", "owner": {"login": "me"}, "private": True, "pushed_at": iso(60)}]))
+    page.wait_for_timeout(600)                                                              # long enough for the old code to have drawn it
+    assert page.locator("#pick-list li").count() == 0 and "secret-private" not in text(page, "body") and text(page, "#link-msg") == ""
     context.close()
 
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-L/Bvn55+KU8y5XpmoVYOr1WNVpugNqQSzYodPREw1To='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-hLaJO+ovW5Jvd7lEI9ejMijmdOMG6HTb9sK7QSTf9vU='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -308,7 +308,7 @@ progress::-webkit-progress-bar { background: var(--card2); } progress::-webkit-p
   <section id="view-schedule" role="tabpanel" aria-labelledby="tab-schedule" hidden>
     <div class="panel">
       <h2>Lịch chạy 7 ngày tới</h2>
-      <p class="muted small">Đọc từ mục <code>schedule</code> trong file workflow của nhánh mặc định. Từ hôm nay đến hết ngày của thời điểm 7 × 24 giờ kể từ bây giờ (nên có 7 hoặc 8 cột). Giờ hiển thị theo máy bạn; cron của GitHub tính theo UTC và có thể trễ vài phút. Workflow theo lịch ở repo công khai bị GitHub tự tắt sau 60 ngày repo không có hoạt động.</p>
+      <p class="muted small">Đọc từ mục <code>schedule</code> trong file workflow của nhánh mặc định. Từ hôm nay đến hết ngày của thời điểm 7 × 24 giờ kể từ bây giờ (nên có 7 hoặc 8 cột). Giờ hiển thị theo máy bạn; cron của GitHub tính theo UTC, trừ khi mục lịch có <code>timezone</code> (khi đó tính theo múi giờ ấy; giờ chuyển mùa mà đồng hồ nhảy qua hoặc lặp lại thì chỉ hiện một lần hoặc không hiện), và có thể trễ vài phút. Workflow theo lịch ở repo công khai bị GitHub tự tắt sau 60 ngày repo không có hoạt động.</p>
       <ul id="frequent" class="plainlist small" hidden></ul>
       <div id="week" class="week"></div>
     </div>
@@ -654,7 +654,32 @@ function agentActivity(m) {
   return out.sort((a, b) => (b.active - a.active) || ((b.when || 0) - (a.when || 0))).slice(0, 12);
 }
 
-// ---- cron, as GitHub reads it: five fields in UTC; day-of-month and day-of-week are OR-ed when both are restricted ----
+// ---- cron, as GitHub reads it: five fields in UTC (or in the zone a `timezone:` names); day-of-month and day-of-week are OR-ed when both are restricted ----
+// A schedule that names a time zone is kept as `CRON_TZ=Zone expr`, the words cron itself uses, so a cron stays one string wherever it travels.
+const ZONE_FORMATS = new Map();
+function zoneFormat(zone) {
+  if (ZONE_FORMATS.has(zone)) return ZONE_FORMATS.get(zone);
+  if (typeof zone !== "string" || zone.length > 64 || !/^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+){0,2}$/.test(zone)) return null;       // a name, never an offset such as +05:00
+  let f = null;
+  try { f = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" }); }
+  catch (e) { return null; }                                                                      // a zone this browser does not know
+  if (ZONE_FORMATS.size >= 200) ZONE_FORMATS.clear();
+  ZONE_FORMATS.set(zone, f);
+  return f;
+}
+function validZone(zone) { return !!zoneFormat(zone); }
+function zoneOffset(ms, zone) {                                                                  // how far the wall clock of the zone is ahead of UTC at that instant, in milliseconds
+  const p = {};
+  for (const x of zoneFormat(zone).formatToParts(new Date(ms))) if (x.type !== "literal") p[x.type] = Number(x.value);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second) - Math.floor(ms / 1000) * 1000;
+}
+// The instant at which the wall clock of the zone reads `local` (given as if it were UTC): none when that time does not exist that day (the hour a clock change skips),
+// the earlier one when it happens twice (the hour a clock change repeats). How GitHub itself treats those two hours is not documented in what was read: the page lists
+// a schedule as wall-clock times, once each.
+function zonedToUtc(local, zone) {
+  const offsets = [...new Set([zoneOffset(local - 86400000, zone), zoneOffset(local + 86400000, zone)])].filter((o) => zoneOffset(local - o, zone) === o);
+  return offsets.length ? Math.min(...offsets.map((o) => local - o)) : null;
+}
 function parseField(text, min, max, names, nameBase) {
   const out = new Set();
   const value = (t) => {
@@ -682,13 +707,16 @@ function parseField(text, min, max, names, nameBase) {
   return out.size ? [...out].sort((a, b) => a - b) : null;
 }
 function parseCron(expr) {
-  const f = String(expr == null ? "" : expr).trim().split(/\s+/);
+  let text = String(expr == null ? "" : expr).trim(), tz = null;
+  const z = /^CRON_TZ=(\S+)\s+(.*)$/.exec(text);
+  if (z) { if (!validZone(z[1])) return null; tz = z[1]; text = z[2]; }
+  const f = text.trim().split(/\s+/);
   if (f.length !== 5) return null;
   const minute = parseField(f[0], 0, 59), hour = parseField(f[1], 0, 23), dom = parseField(f[2], 1, 31);
   const month = parseField(f[3], 1, 12, MONTH_NAMES, 1), dowRaw = parseField(f[4], 0, 7, DAY_NAMES, 0);      // 7 is Sunday too, as in vixie cron
   const dow = dowRaw ? [...new Set(dowRaw.map((v) => v % 7))].sort((a, b) => a - b) : null;
   if (!minute || !hour || !dom || !month || !dow) return null;
-  return { minute, hour, dom, month, dow, domAny: f[2].startsWith("*"), dowAny: f[4].startsWith("*"), fields: f };
+  return { minute, hour, dom, month, dow, domAny: f[2].startsWith("*"), dowAny: f[4].startsWith("*"), fields: f, tz };
 }
 // Vixie cron: when either day field starts with `*` (`*/2` too) a day must be in BOTH sets (a plain `*` is every day, so it constrains nothing);
 // when both are restricted it is enough to be in one.
@@ -700,15 +728,17 @@ function occurrences(expr, fromMs, untilMs, limit) {
   const c = typeof expr === "string" ? parseCron(expr) : expr;
   const out = [];
   if (!c) return out;
-  const start = new Date(fromMs);
+  const zone = c.tz || null;
+  const start = new Date(fromMs + (zone ? zoneOffset(fromMs, zone) : 0));                          // the date on the wall clock of the schedule's zone, read as if it were UTC
   let day = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-  for (; day <= untilMs && out.length < limit; day += 86400000) {
+  const last = zone ? untilMs + zoneOffset(untilMs, zone) + 86400000 : untilMs;                    // a day over: the offset at the end may not be the one in force at the start
+  for (; day <= last && out.length < limit; day += 86400000) {
     const dt = new Date(day);
     if (!dayMatches(c, dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), dt.getUTCDay())) continue;
     for (const h of c.hour) {
       for (const mi of c.minute) {
-        const t = day + h * 3600000 + mi * 60000;
-        if (t > fromMs && t < untilMs) { out.push(t); if (out.length >= limit) return out; }
+        const local = day + h * 3600000 + mi * 60000, t = zone ? zonedToUtc(local, zone) : local;
+        if (t !== null && t > fromMs && t < untilMs) { out.push(t); if (out.length >= limit) return out; }
       }
     }
   }
@@ -722,34 +752,56 @@ function describeCron(expr) {
   const f = c.fields, plain = (from) => f.slice(from).every((x) => x === "*");
   const every = /^\*\/(\d+)$/.exec(f[0]);
   if (every && 60 % Number(every[1]) === 0 && plain(1)) return "mỗi " + every[1] + " phút";
-  if (/^\d+$/.test(f[0]) && f[1] === "*" && plain(2)) return "mỗi giờ, phút " + pad2(c.minute[0]);
+  if (/^\d+$/.test(f[0]) && f[1] === "*" && plain(2)) return "mỗi giờ, phút " + pad2(c.minute[0]) + (c.tz ? " (" + c.tz + ")" : "");
   if (/^\d+$/.test(f[0]) && /^\d+$/.test(f[1]) && f[3] === "*") {
-    const at = pad2(c.hour[0]) + ":" + pad2(c.minute[0]) + " UTC";
+    const at = pad2(c.hour[0]) + ":" + pad2(c.minute[0]) + " " + (c.tz || "UTC");
     if (f[2] === "*" && f[4] === "*") return "hằng ngày " + at;
     if (f[2] === "*" && !f[4].includes("*")) return at + ", " + c.dow.map((d) => DOW_VN[d]).join(" ");
     if (f[4] === "*" && !f[2].includes("*")) return at + ", ngày " + c.dom.join(",") + " hằng tháng";
   }
-  return String(expr);
+  return c.tz ? cronLabel(expr) : String(expr);
+}
+function cronLabel(expr) {                                                                         // the expression with the zone its times are in: "0 1 * * 3,6 (UTC)"
+  const c = parseCron(expr);
+  return c ? c.fields.join(" ") + " (" + (c.tz || "UTC") + ")" : String(expr);
 }
 function extractCrons(text) {
   const out = [];
-  let indent = -1, block = -1;
+  let indent = -1, block = -1, item = null;
+  const KEY = (key) => new RegExp("^\\s*(?:-\\s*)?" + key + "\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|([^#\\s][^#]*?))\\s*(?:#.*)?$");
+  const CRON_LINE = KEY("cron"), ZONE_LINE = KEY("timezone");
+  const pick = (m) => (m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]).trim();
+  const keep = (cron, tz) => {                                                                      // `timezone:` is optional; a zone this browser does not know shows nothing rather than a wrong time
+    if (cron === undefined || /^CRON_TZ=/i.test(cron)) return;
+    if (tz === undefined) out.push(cron);
+    else if (validZone(tz)) out.push("CRON_TZ=" + tz + " " + cron);
+  };
+  const flush = () => { if (item) keep(item.cron, item.tz); item = null; };
+  const flowItem = (inner) => {
+    const c = /cron\s*:\s*(["'])(.*?)\1/.exec(inner), z = /timezone\s*:\s*(?:(["'])(.*?)\1|([^,\s}]+))/.exec(inner);
+    if (c) keep(c[2].trim(), z ? (z[2] !== undefined ? z[2] : z[3]).trim() : undefined);
+  };
   for (const raw of String(text == null ? "" : text).split(/\r?\n/)) {
     const line = raw.replace(/\t/g, "    ");
     if (/^\s*(#.*)?$/.test(line)) continue;
     const lead = line.length - line.trimStart().length;
     if (block >= 0) { if (lead > block) continue; block = -1; }                      // inside `run: |`: text, not YAML
     if (/(?:^|[:-])\s+[|>][+-]?\d*\s*(?:#.*)?$/.test(line)) block = lead;
-    if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) indent = -1;
+    if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
     if (indent < 0) {
       const flow = /^\s*schedule\s*:\s*\[(.*)\]\s*(#.*)?$/.exec(line);
-      if (flow) { for (const m of flow[1].matchAll(/cron\s*:\s*(["'])(.*?)\1/g)) out.push(m[2].trim()); continue; }
+      if (flow) { for (const g of flow[1].matchAll(/\{([^}]*)\}/g)) flowItem(g[1]); continue; }
       if (/^\s*schedule\s*:\s*(#.*)?$/.test(line)) indent = lead;
       continue;
     }
-    const m = /^\s*(?:-\s*)?cron\s*:\s*(?:"([^"]*)"|'([^']*)'|([^#\s][^#]*?))\s*(?:#.*)?$/.exec(line);
-    if (m) out.push((m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]).trim());
+    if (/^\s*-/.test(line)) flush();                                                                // a new entry of the list starts: the one before is complete
+    const inline = /^\s*-\s*\{(.*)\}\s*(#.*)?$/.exec(line);
+    if (inline) { flowItem(inline[1]); continue; }
+    const c = CRON_LINE.exec(line), z = ZONE_LINE.exec(line);
+    if (c) { item = item || {}; item.cron = pick(c); }
+    if (z) { item = item || {}; item.tz = pick(z); }
   }
+  flush();
   return out.filter((c) => parseCron(c));
 }
 function hasDispatch(text) { return String(text == null ? "" : text).split(/\r?\n/).some((l) => !/^\s*#/.test(l) && /\bworkflow_dispatch\b/.test(l)); }
@@ -915,7 +967,7 @@ function boardModel(models, nowMs) {
                            ref: { path: wf.path } });
       const trig = (id, kind, title, sub, extra) => link(add(Object.assign({ id: "t|" + m.repo + "|" + id, wave: 0, kind, repo: m.repo, short, code: kind === "cron" ? "CRON" : kind === "manual" ? "TAY" : "SỰ KIỆN", title, sub,
                                                                               status: off ? "blocked" : "ready", chip: off ? "Tắt" : "Sẵn sàng" }, extra || {})), wfNode);
-      for (const cron of crons) trig("cron|" + cron, "cron", describeCron(cron), cron + " (UTC)", { cron });
+      for (const cron of crons) trig("cron|" + cron, "cron", describeCron(cron), cronLabel(cron), { cron });
       const events = new Set((wf.runs || []).map((r) => r.event).filter(Boolean));
       if (wf.dispatch || events.has("workflow_dispatch")) trig("manual", "manual", "Chạy tay", "workflow_dispatch");
       for (const ev of events) {
@@ -1460,7 +1512,7 @@ function drawEdges() {
 function workflowRow(model, wf) {
   const k = model.repo + "|" + wf.id, latest = wf.runs[0] || null, st = latest ? runState(latest) : null, hist = sparkHistory(wf.runs, 12);
   const crons = (wf.crons || []).map((c) => ({ c, next: nextOccurrence(c, Date.now()) })).filter((x) => x.next !== null).sort((a, b) => a.next - b.next);
-  const sched = crons.length ? h("span", { class: "sched", title: crons.map((x) => x.c + " (UTC)").join(" · ") },
+  const sched = crons.length ? h("span", { class: "sched", title: crons.map((x) => cronLabel(x.c)).join(" · ") },
     "⏱ " + describeCron(crons[0].c) + " · kế tiếp " + new Date(crons[0].next).toLocaleString("vi-VN", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) + " (" + ago((Date.now() - crons[0].next) / 1000) + ")") : null;
   const d = h("details", { class: "wf" },
     h("summary", { "data-focus-key": "wf:" + k },
@@ -1588,13 +1640,13 @@ function renderWeek(all) {
   for (let i = 0; i < days; i++) { const d = new Date(first.getFullYear(), first.getMonth(), first.getDate() + i); byDay.set(dayKey(d), []); cols.push(d); }
   for (const e of plan.items) { const list = byDay.get(dayKey(new Date(e.ms))); if (list) list.push(e); }
   const anyCron = plan.items.length > 0;
-  $("frequent").replaceChildren(...plan.frequent.map((f) => h("li", { title: f.cron + " (UTC)" }, h("b", { text: f.repo.split("/")[1] + " · " + f.wf }), " chạy lặp " + describeCron(f.cron) + " (không liệt kê từng lần)")));
+  $("frequent").replaceChildren(...plan.frequent.map((f) => h("li", { title: cronLabel(f.cron) }, h("b", { text: f.repo.split("/")[1] + " · " + f.wf }), " chạy lặp " + describeCron(f.cron) + " (không liệt kê từng lần)")));
   $("frequent").hidden = !plan.frequent.length;
   $("week").replaceChildren(...cols.map((d, i) => {
     const list = byDay.get(dayKey(d)), shown = list.slice(0, 8);
     const title = i === 0 ? "Hôm nay" : i === 1 ? "Ngày mai" : d.toLocaleDateString("vi-VN", { weekday: "long" });
     return h("div", { class: "day" + (i === 0 ? " today" : "") }, h("h3", { text: title + " · " + d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" }) }),
-      list.length ? h("ul", null, shown.map((e) => h("li", { title: e.cron + " (UTC)" }, h("time", { datetime: new Date(e.ms).toISOString(), text: new Date(e.ms).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) }), e.repo.split("/")[1] + " · " + e.wf)),
+      list.length ? h("ul", null, shown.map((e) => h("li", { title: cronLabel(e.cron) }, h("time", { datetime: new Date(e.ms).toISOString(), text: new Date(e.ms).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) }), e.repo.split("/")[1] + " · " + e.wf)),
         list.length > shown.length ? h("li", { class: "muted", text: "+" + (list.length - shown.length) + " lần nữa" }) : null) : h("p", { class: "small muted", text: anyCron ? "—" : "Không có lịch" }));
   }));
 }
@@ -1682,7 +1734,7 @@ function clearCaches() {
   state.etags.clear(); state.files.clear(); state.jobsCache.clear(); state.models.clear(); state.loadingJobs.clear();
   for (const k of [...state.epoch.keys()]) state.epoch.set(k, state.epoch.get(k) + 1);
   if (state.saved) state.saved.models = new Map();
-  state.pickList = []; $("pick-list").replaceChildren(); $("io").value = "";
+  state.pickList = []; $("pick-list").replaceChildren(); $("io").value = ""; say("link-msg", "", "");
   state.rate = null; renderRate();
 }
 function schedule() {
@@ -1722,7 +1774,9 @@ async function onPickLoad() {
   const owner = $("pick-owner").value.trim();
   if (!token() && !segmentOk(owner)) return say("link-msg", "Nhập tên tài khoản hoặc tổ chức (hoặc dán token để liệt kê repo của bạn).", "bad");
   say("link-msg", "Đang tải danh sách…");
+  const gen = state.gen;
   const res = await call(token() ? "/user/repos?sort=pushed&per_page=100&affiliation=owner,collaborator,organization_member" : "/users/" + owner + "/repos?sort=pushed&per_page=100&type=owner");
+  if (gen !== state.gen) return;                                                     // the token changed while this was on its way: the answer belongs to the old one and is dropped
   if (res.status !== 200 || !Array.isArray(res.data)) return say("link-msg", explain(res.status, res.data), "bad");
   state.pickList = res.data.map((r) => ({ name: parseRepo(r && r.full_name), owner: String(r && r.owner && r.owner.login || ""), private: !!(r && r.private), pushedAt: r && r.pushed_at }))
     .filter((r) => r.name && (!owner || r.owner.toLowerCase() === owner.toLowerCase())).slice(0, 100);
