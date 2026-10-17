@@ -377,6 +377,32 @@ def test_a_row_for_a_finished_workflow_loads_its_steps_when_opened(ui):
     assert states == ["st-done", "st-failed", "st-failed"]                                                       # start, the failed job, the result
 
 
+def test_a_failed_read_of_a_finished_runs_jobs_is_forgotten_after_half_a_minute_and_tried_again(browser):
+    context, page = new_page(browser)
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    good = page.gh.routes[f"/repos/{REPO}/actions/runs/90/jobs"]
+    page.gh.routes[f"/repos/{REPO}/actions/runs/90/jobs"] = (500, {"message": "boom"})
+    page.goto(PAGE_URL)
+    loaded(page)
+    repos(page)
+    row = page.locator("details.wf", has_text="Nightly")
+    open_row = "document.querySelector('details.wf[open]')"
+    row.locator("summary").click()
+    wait(page, f"{open_row} !== null && {open_row}.textContent.includes('Chưa đọc được các bước')")           # the first read failed
+    page.gh.routes[f"/repos/{REPO}/actions/runs/90/jobs"] = good                                              # GitHub is back
+    row.locator("summary").click()
+    wait(page, f"{open_row} === null")
+    row.locator("summary").click()                                                                            # folded and opened again, within the half minute: the failure is still what is shown
+    wait(page, f"{open_row} !== null")
+    assert "Chưa đọc được các bước" in row.inner_text() and "Run e2e" not in row.inner_text()
+    page.clock.run_for(31_000)
+    row.locator("summary").click()
+    wait(page, f"{open_row} === null")
+    row.locator("summary").click()                                                                            # after the half minute the failure is forgotten and the jobs are asked for again
+    wait(page, f"{open_row} !== null && {open_row}.textContent.includes('Run e2e')")
+    context.close()
+
+
 def test_a_run_that_is_run_again_does_not_show_the_steps_of_its_earlier_attempt(browser):
     context, page = new_page(browser)
     page.goto(PAGE_URL)

@@ -936,3 +936,17 @@ def test_a_late_quota_reading_never_raises_the_count_and_an_old_window_never_rep
 def test_the_jobs_read_for_one_attempt_of_a_run_are_not_taken_for_the_next():
     runs = [{"id": 7}, {"id": 7, "attempt": 0}, {"id": 7, "attempt": 1}, {"id": 7, "attempt": 2}, {"id": 8, "attempt": 2}]
     assert _node([["jobKey", ["o/r", r]] for r in runs]) == ["o/r#7#1", "o/r#7#1", "o/r#7#1", "o/r#7#2", "o/r#8#2"]
+
+
+# ---- a repository with many open pull requests -------------------------------------------------------------------------------------
+
+def test_a_pull_request_that_a_run_belongs_to_is_a_card_even_beyond_the_twelve_newest():
+    pulls = [{"number": n, "title": f"t{n}", "branch": f"feat/{n}", "headRepo": "o/r", "user": "u", "userType": "User", "draft": False} for n in range(1, 15)]
+    run = lambda i, branch: {"id": i, "number": i, "status": "completed", "conclusion": "success", "event": "pull_request", "branch": branch, "headRepo": "o/r", "actor": "u", "startedAt": None, "updatedAt": None}    # noqa: E731
+    wf = lambda i, branch: {"id": i, "name": f"CI{i}", "path": f".github/workflows/ci{i}.yml", "state": "active", "crons": [], "dispatch": False, "runs": [run(i, branch)]}    # noqa: E731
+    model = lambda *wfs: _model(repo="o/r", info={"defaultBranch": "main"}, pulls=pulls, workflows=list(wfs))    # noqa: E731
+    prs = lambda board: sorted(n["ref"]["pr"] for n in board["nodes"] if n["kind"] == "pr")    # noqa: E731
+    assert prs(_board([model()])) == list(range(1, 13))                                                      # nothing belongs to the 13th and 14th: they are left out
+    both = _board([model(wf(1, "feat/14"), wf(2, "feat/3"))])
+    assert prs(both) == list(range(1, 13)) + [14]                                                            # the 14th has a run on the board: it is a card; the 3rd is not doubled
+    assert any(e["from"] == "r|o/r|1" and e["to"] == "p|o/r|14" for e in both["edges"]) and any(e["from"] == "r|o/r|2" and e["to"] == "p|o/r|3" for e in both["edges"])

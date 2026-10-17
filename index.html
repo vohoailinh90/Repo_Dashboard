@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-RoFEwt95ZLAW8xUPG2GMSsaK059SoQVu/U/x06PsxUQ='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+e443deXI9/6wdTuAXONmgddPaER63NbmbtN5rrtRoI='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -978,12 +978,12 @@ function boardModel(models, nowMs) {
   for (const m of models) {
     if (!m || !m.ok) continue;
     const short = clip(String(m.repo).split("/")[1], 16);
-    const prNodes = [];
-    for (const pr of (m.pulls || []).slice(0, 12)) {
+    const prNode = (pr) => {                                             // add() keeps one node per id, so a pull request asked for twice is one card
       const agent = agentKind(pr.branch) || agentKind(pr.user) || (pr.userType === "Bot" ? "bot" : null);
-      prNodes.push(add({ id: "p|" + m.repo + "|" + pr.number, wave: 3, kind: "pr", repo: m.repo, short, code: "PR#" + pr.number, title: pr.title, sub: [pr.user, pr.branch].filter(Boolean).join(" · "),
-                         status: prStatus(pr), chip: pr.draft ? "Nháp" : "Chờ soát", branch: pr.branch, when: isoMs(pr.updatedAt), agent, ref: { pr: pr.number } }));
-    }
+      return add({ id: "p|" + m.repo + "|" + pr.number, wave: 3, kind: "pr", repo: m.repo, short, code: "PR#" + pr.number, title: pr.title, sub: [pr.user, pr.branch].filter(Boolean).join(" · "),
+                   status: prStatus(pr), chip: pr.draft ? "Nháp" : "Chờ soát", branch: pr.branch, when: isoMs(pr.updatedAt), agent, ref: { pr: pr.number } });
+    };
+    for (const pr of (m.pulls || []).slice(0, 12)) prNode(pr);           // the twelve newest; a pull request that a run on the board belongs to is added below, however old
     for (const wf of m.workflows || []) {
       const off = !!wf.state && wf.state !== "active", crons = wf.crons || [];
       const status = workflowStatus(wf, nowMs);
@@ -1003,8 +1003,8 @@ function boardModel(models, nowMs) {
         const rn = add({ id: "r|" + m.repo + "|" + run.id, wave: 2, kind: "run", repo: m.repo, short, code: "#" + run.number, title: wf.name, sub: [run.branch, run.actor].filter(Boolean).join(" · "),
                          status: rs, chip: rs === "blocked" && st.tone === "failed" ? st.label + " (cũ)" : st.label, branch: run.branch, when: isoMs(run.updatedAt || run.startedAt), attempt: run.attempt, ref: { run: run.id } });
         link(wfNode, rn);
-        const pr = linkedPull(m, run), prNode = pr ? prNodes.find((n) => n.ref.pr === pr.number) : null;
-        if (prNode) link(rn, prNode);
+        const pr = linkedPull(m, run);
+        if (pr) link(rn, prNode(pr));
       }
     }
   }
@@ -1350,7 +1350,7 @@ function omittedOf(model, run) {                                         // jobs
 function jobsOf(model, run) {
   if (model.jobs && Object.prototype.hasOwnProperty.call(model.jobs, run.id)) return model.jobs[run.id];
   const e = state.jobsCache.get(jobKey(model.repo, run));
-  return e && (!e.active || Date.now() - e.at < 30000) ? e.jobs : undefined;
+  return e && ((!e.active && e.jobs !== null) || Date.now() - e.at < 30000) ? e.jobs : undefined;        // a finished run's jobs are kept for good; a run still going, or a read that failed, for half a minute
 }
 
 // ---- drawing ----
