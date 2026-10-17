@@ -1361,6 +1361,104 @@ def test_a_repository_unlinked_while_it_waits_for_a_slot_is_never_read(browser):
     context.close()
 
 
+def ten_workflows(repo=REPO):
+    """Ten active workflows, none with a run in the list: their files are read in two batches of eight, and so are their histories."""
+    base, ids = f"/repos/{repo}", range(11, 21)
+    routes = app_routes(repo)
+    routes[f"{base}/actions/workflows"] = (200, {"workflows": [{"id": i, "name": f"W{i}", "path": f".github/workflows/w{i}.yml", "state": "active"} for i in ids]})
+    routes[f"{base}/actions/runs"] = (200, {"workflow_runs": []})
+    for i in ids:
+        routes[f"{base}/contents/.github/workflows/w{i}.yml"] = (200, "on: push\n")
+        routes[f"{base}/actions/workflows/{i}/runs"] = (200, {"workflow_runs": []})
+    return routes
+
+
+def full_pages(repo=REPO):
+    """A hundred workflows and a hundred open pull requests: the first page of each list is full, so a second page is asked for."""
+    base = f"/repos/{repo}"
+    routes = app_routes(repo)
+    routes[f"{base}/actions/workflows"] = (200, {"workflows": [{"id": 100 + i, "name": f"P{i}", "path": f".github/workflows/p{i}.yml", "state": "active"} for i in range(100)]})
+    routes[f"{base}/actions/runs"] = (200, {"workflow_runs": []})
+    routes[f"{base}/pulls"] = (200, [dict(routes[f"{base}/pulls"][1][0], number=1000 + i) for i in range(100)])
+    return routes
+
+
+STALE_STEPS = [("info", app_routes, ""), ("a file", app_routes, "/contents/.github/workflows/ci.yml"), ("a history", app_routes, "/actions/workflows/1/runs"),
+               ("the second batch of files", ten_workflows, "/contents/.github/workflows/w11.yml"), ("the second batch of histories", ten_workflows, "/actions/workflows/11/runs"),
+               ("the first page of pull requests", full_pages, "/pulls"), ("the first page of workflows", full_pages, "/actions/workflows")]
+
+
+@pytest.mark.parametrize("step,routes,suffix", STALE_STEPS, ids=[s[0] for s in STALE_STEPS])
+def test_a_look_that_belongs_to_a_replaced_token_sends_nothing_more(browser, step, routes, suffix):
+    def settled(page):
+        open_tab(page, "repos")
+        wait(page, "(document.querySelector('#repo-grid .repo') || {textContent: ''}).textContent.includes('PR mở')")
+        return quiet(page)
+
+    baseline_context, baseline = new_page(browser)                                           # what one complete look at the repository costs, from a cold page
+    baseline.gh.routes = routes()
+    baseline.goto(PAGE_URL)
+    full = settled(baseline)
+    baseline_context.close()
+    context, page = new_page(browser)
+    page.gh.routes = routes()
+    take = {"armed": False, "route": None}
+
+    def hold(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        if take["armed"] and take["route"] is None and request.url.split("?")[0].endswith(f"/repos/{REPO}{suffix}"):
+            take["route"] = route                                                            # this answer of the look that the first token starts is kept back
+            return None
+        return route.fallback()
+
+    context.route(re.compile(r"https://api\.github\.com/repos/.*"), hold)
+    page.goto(PAGE_URL)
+    settled(page)
+    open_tab(page, "settings")
+    take["armed"] = True
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None, step
+    page.fill("#token", TOKEN + "2")                                                         # the token is replaced while that look is in the middle of one of its steps
+    page.press("#token", "Tab")
+    page.wait_for_timeout(300)
+    before = quiet(page)
+    url = take["route"].request.url
+    path = url.split("api.github.com")[1].split("?")[0]
+    status, body = page.gh.routes[path]
+    take["route"].fulfill(status=status, headers=CORS, content_type="application/json", body=body if isinstance(body, str) else json.dumps(body))
+    after = quiet(page)
+    assert after - before == full, step                                                      # only the look the new token asked for was made: the old one stopped at its next step
+    assert page.gh.requests[before]["clean"] == f"/repos/{REPO}", step                       # and the first request after the old one was let go is the new look's own start, not a follow-up of the old
+    context.close()
+
+
+def test_a_repository_whose_every_schedule_runs_often_does_not_say_there_is_no_schedule(browser):
+    context, page = new_page(browser)
+    page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/weekly.yml"] = (200, "on:\n  schedule:\n    - cron: '*/30 * * * *'\n")
+    page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/nightly.yml"] = (200, "on:\n  schedule:\n    - cron: '*/15 * * * *'\n")
+    page.goto(PAGE_URL)
+    loaded(page)
+    open_tab(page, "schedule")
+    assert page.locator("#frequent").is_visible()
+    days = page.eval_on_selector_all("#week .day", "els => els.map(e => e.textContent)")
+    assert days and not any("Không có lịch" in d for d in days)                              # the list above says they run repeatedly: the days are not "no schedule"
+    context.close()
+    context, page = new_page(browser)
+    page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/weekly.yml"] = (200, "on:\n  push:\n")
+    page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/nightly.yml"] = (200, "on:\n  push:\n")
+    page.goto(PAGE_URL)
+    loaded(page)
+    open_tab(page, "schedule")
+    days = page.eval_on_selector_all("#week .day", "els => els.map(e => e.textContent)")
+    assert days and all("Không có lịch" in d for d in days)                                  # and with no schedule at all it still says so
+    context.close()
+
+
 def test_a_look_at_many_repositories_stops_starting_new_ones_once_github_asks_to_wait(browser):
     names = [f"demo/r{i}" for i in range(6)]
     context, page = new_page(browser, repos=names)

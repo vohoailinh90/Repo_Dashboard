@@ -1040,6 +1040,15 @@ def test_an_apostrophe_inside_a_plain_scalar_does_not_open_a_quote():
     assert _node([["extractCrons", [t]] for t, _ in crons]) == [expected for _, expected in crons]
 
 
+def test_an_anchor_or_a_tag_on_one_trigger_entry_does_not_hide_it():
+    assert _node([["flowTop", ["[push, &manual workflow_dispatch]"]], ["flowTop", ["{&k a: 1, !!str b: 2, c: 3}"]], ["flowTop", ['[&a "x", !!str y, *z]']]]) == [["push", "workflow_dispatch"], ["a", "b", "c"], ["x", "y", "*z"]]
+    cases = [("on: [push, &manual workflow_dispatch]\n", True), ("on: [push, !!str workflow_dispatch]\n", True), ("on: [push, &manual \"workflow_dispatch\"]\n", True),
+             ("on: {push: {}, &m workflow_dispatch: {}}\n", True), ("on:\n  - push\n  - &manual workflow_dispatch\n", True), ("on:\n  push:\n  &m workflow_dispatch:\n", True),
+             ("on:\n  push:\n  &m !!str workflow_dispatch: {}\n", True), ("on: [push, &manual push]\n", False), ("on: [push, *manual]\n", False), ("on:\n  - &p push\n", False),
+             ("on:\n  push:\n    branches: [&b workflow_dispatch]\n", False)]
+    assert _node([["hasDispatch", [t]] for t, _ in cases]) == [expected for _, expected in cases]
+
+
 def test_a_quoted_scalar_is_skipped_whole_wherever_it_starts():
     assert _node([["stripComment", ['"a # b": 1 # c']], ["stripComment", ["'a # b' # c"]]]) == ['"a # b": 1 ', "'a # b' "]               # at the start of the line
     assert _node([["flowStart", ['"k[": [a]']], ["flowStart", ['k: "see: [x]"']], ["flowStart", ["k: 'see: {x}'"]], ["flowStart", ["k: [a]"]]]) == [6, -1, -1, 3]

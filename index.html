@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-707euUMpT/wa4TpiSy61XKNGlcF38Of6wIVwimB3s58='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-LnmR3MAhRD9a1sAR8GJDnLjzuaClTLENfFfe0nOutVI='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -982,7 +982,7 @@ function flowTop(text) {
   if (open !== "{" && open !== "[") return null;
   const items = [];
   let depth = 0, cur = "", keyDone = false, closed = false;
-  const end = () => { const s = cur.trim(); if (s) items.push(s); cur = ""; keyDone = false; };
+  const end = () => { const s = cur.trim().replace(/^(?:[&!]\S*\s+)+/, ""); if (s) items.push(s); cur = ""; keyDone = false; };       // an anchor or a tag on one entry (`&a push`, `!!str push`) is not part of its name
   for (let i = 1; i < t.length && !closed; i++) {
     const ch = t[i];
     if (isQuote(t, i)) { const to = skipQuoted(t, i); if (depth === 0 && !keyDone) cur += t.slice(i + 1, to - 1); i = to - 1; continue; }
@@ -1001,7 +1001,7 @@ function hasDispatch(text) {
       const value = code.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "").trim(), top = flowTop(value);
       if (top !== null ? top.includes("workflow_dispatch") : /^["']?workflow_dispatch["']?$/.test(value)) return true;
     }
-    if (onDirect && /^\s*(?:-\s*)?["']?workflow_dispatch["']?\s*(?::.*)?$/.test(code)) return true;
+    if (onDirect && /^\s*(?:-\s*)?(?:[&!]\S*\s+)*["']?workflow_dispatch["']?\s*(?::.*)?$/.test(code)) return true;
   }
   return false;
 }
@@ -1517,12 +1517,12 @@ async function readPages(path, max, stale) {
 }
 // The workflows of a repository, a hundred to a page, in the shape the single answer used to have (`{workflows: [...]}`), plus `more` when the list may go on past what was read
 // (the limit was reached, or a later page could not be read). A first page that fails is returned as it is.
-async function readWorkflowList(base) {
+async function readWorkflowList(base, stale) {
   const first = await call(base + "/actions/workflows?per_page=" + LIST_PAGE);
   if (first.status !== 200 || !first.data || !Array.isArray(first.data.workflows)) return first;
   const all = first.data.workflows.slice();
   let more = all.length >= LIST_PAGE;
-  for (let n = 2; more && n <= MAX_WF_PAGES; n++) {
+  for (let n = 2; more && n <= MAX_WF_PAGES && !(stale && stale()); n++) {
     const res = await call(base + "/actions/workflows?per_page=" + LIST_PAGE + "&page=" + n);
     if (res.status !== 200 || !res.data || !Array.isArray(res.data.workflows)) break;
     all.push(...res.data.workflows);
@@ -1531,8 +1531,10 @@ async function readWorkflowList(base) {
   return { status: 200, data: { workflows: all }, more };
 }
 async function loadRepo(repo) {
-  const base = "/repos/" + repo, warnings = [], gen = state.gen;
-  const [info, runsRes, wfsRes, pullsRes] = await Promise.all([call(base), call(base + "/actions/runs?per_page=40"), readWorkflowList(base), readPages(base + "/pulls?state=open", MAX_PULL_PAGES)]);
+  const base = "/repos/" + repo, warnings = [], gen = state.gen, stale = () => gen !== state.gen;
+  const abandoned = { repo, ok: false, error: "Lượt đọc này bắt đầu với token cũ." };                     // never shown: the token changed, so loadNow drops whatever this returns
+  const [info, runsRes, wfsRes, pullsRes] = await Promise.all([call(base), call(base + "/actions/runs?per_page=40"), readWorkflowList(base, stale), readPages(base + "/pulls?state=open", MAX_PULL_PAGES, stale)]);
+  if (stale()) return abandoned;                                                                           // the token was replaced while the first step was on its way: no follow-up request is sent with the new one
   if (info.status !== 200) return { repo, ok: false, error: explain(info.status, info.data) };
   let runList = [], wfList = [], pulls = [];
   if (runsRes.status === 200 && runsRes.data && Array.isArray(runsRes.data.workflow_runs)) runList = runsRes.data.workflow_runs.map(normRun).filter(Boolean);
@@ -1550,6 +1552,7 @@ async function loadRepo(repo) {
   const sources = [...workflows.filter((w) => w.state === "active"), ...workflows.filter((w) => w.state !== "active" && w.state !== "deleted")].filter((w) => safeWorkflowPath(w.path)), readable = sources.slice(0, FILES_MAX);
   let unread = 0;                                                                                          // a workflow whose file was not got declares "nothing" only because nobody could look
   for (let i = 0; i < readable.length; i += 8) {
+    if (stale()) return abandoned;
     await Promise.all(readable.slice(i, i + 8).map(async (w) => {
       const file = await cached("file:" + repo + ":" + w.path, 600000, () => call(base + "/contents/" + pathUrl(w.path), { raw: true }));
       if (file.status === 200 && typeof file.data === "string") { w.crons = extractCrons(file.data); w.dispatch = hasDispatch(file.data); }
@@ -1559,6 +1562,7 @@ async function loadRepo(repo) {
   const skippedFiles = sources.length - readable.length;
   if (unread + skippedFiles > 0) warnings.push((unread + skippedFiles) + " workflow chưa đọc được file (" + [unread ? "GitHub không trả lời hoặc token thiếu quyền Contents: Read" : "", skippedFiles ? "quá giới hạn " + FILES_MAX + " file" : ""].filter(Boolean).join("; ")
                                                 + "): lịch cron và khả năng chạy tay của chúng có thể thiếu.");
+  if (stale()) return abandoned;
   const agentsRes = await cached("agents:" + repo, 600000, () => call(base + "/contents/.claude/agents"));
   const agentFiles = agentsRes.status === 200 && Array.isArray(agentsRes.data)
     ? agentsRes.data.filter((f) => f && f.type === "file" && /\.md$/i.test(String(f.name))).map((f) => clip(String(f.name).replace(/\.md$/i, ""), 60)).slice(0, 30) : null;
@@ -1566,6 +1570,7 @@ async function loadRepo(repo) {
   const crowded = workflows.filter((w) => w.state === "active" && w.runs.length < 3), asked = crowded.slice(0, HISTORY_MAX);
   let failed = 0;                                                                                          // histories asked for and not got: they are told apart from "never ran"
   for (let i = 0; i < asked.length; i += 8) {                                                              // eight at a time: a big repository must not be a burst of two dozen requests
+    if (stale()) return abandoned;
     await Promise.all(asked.slice(i, i + 8).map(async (w) => {
       const res = await call(base + "/actions/workflows/" + w.id + "/runs?per_page=12");
       if (res.status !== 200 || !res.data || !Array.isArray(res.data.workflow_runs)) { failed++; return; }
@@ -1581,6 +1586,7 @@ async function loadRepo(repo) {
   for (const w of workflows) for (const run of w.runs) if (runState(run).active) active.push({ run, wf: { id: w.id, name: w.name, path: w.path } });
   active.sort((a, b) => (isoMs(b.run.createdAt) || 0) - (isoMs(a.run.createdAt) || 0));
   const shown = active.slice(0, 4), jobs = {}, jobsOmitted = {};
+  if (stale()) return abandoned;
   await Promise.all(shown.map(async (a) => {
     const got = await readJobs(base + "/actions/runs/" + a.run.id + "/jobs");
     if (got && !got.failed) { jobs[a.run.id] = got.jobs; if (got.omitted) jobsOmitted[a.run.id] = got.omitted; return; }
@@ -1946,7 +1952,7 @@ function renderWeek(all) {
   const end = new Date(now.getTime() + 7 * 86400000), days = Math.round((new Date(end.getFullYear(), end.getMonth(), end.getDate()) - first) / 86400000) + 1;
   for (let i = 0; i < days; i++) { const d = new Date(first.getFullYear(), first.getMonth(), first.getDate() + i); byDay.set(dayKey(d), []); cols.push(d); }
   for (const e of plan.items) { const list = byDay.get(dayKey(new Date(e.ms))); if (list) list.push(e); }
-  const anyCron = plan.items.length > 0;
+  const anyCron = plan.items.length > 0 || plan.frequent.length > 0;           // a schedule that runs often is a schedule: the days are not "no schedule"
   $("frequent").replaceChildren(...plan.frequent.map((f) => h("li", { title: cronLabel(f.cron) }, h("b", { text: f.repo.split("/")[1] + " · " + f.wf }), " chạy lặp " + describeCron(f.cron) + " (không liệt kê từng lần)")));
   $("frequent").hidden = !plan.frequent.length;
   $("week").replaceChildren(...cols.map((d, i) => {
