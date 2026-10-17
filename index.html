@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-A9foWL+8MLM1iO2nvf7/Jy/9Zvlk5Ae5urZ+/IrRe2E='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-4R2wvAIIKnC9+6cY5ZTVDSpeS94UQBW8vAYm0kbKgf4='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -809,6 +809,22 @@ function cronLabel(expr) {                                                      
 }
 // The lines of a workflow file that are YAML (not blank, not a comment, not the body of a block scalar such as `run: |`), each with where it stands: `onTop` for the
 // top-level `on:` line itself, `onDirect` for a line that is a direct child of `on` (the first line under it fixes how its keys are indented).
+// The text of a YAML line without its comment. A `#` starts a comment at the start of the line or after a space, unless it is inside a quoted value. A quote opens only where a value
+// starts (after `:`, `-`, `,`, `[`, `{`, `?` or at the start of the line), so the apostrophe of `it's` is none; `\"` and `''` inside a quoted value do not close it.
+function stripComment(line) {
+  let quote = "";
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (quote === '"' && ch === "\\") i++;
+      else if (ch === quote) { if (quote === "'" && line[i + 1] === "'") i++; else quote = ""; }
+      continue;
+    }
+    if (ch === '"' || ch === "'") { const before = line.slice(0, i).trimEnd(); if (before === "" || /[:\-,\[{?]$/.test(before)) quote = ch; continue; }
+    if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i);
+  }
+  return line;
+}
 // A flow collection (`[` or `{`) that opens a value and is closed on a later line is one logical line: its lines are joined and their comments dropped, so that `schedule: [`,
 // `{cron: '0 2 * * *'}` and `]` read like the same thing on one line. One that is not closed within FLOW_LINES lines is left as it is, and the file is not swallowed.
 const FLOW_LINES = 60;
@@ -845,12 +861,12 @@ function yamlLines(text) {
     if (block >= 0) { if (lead > block) continue; block = -1; }                      // inside `run: |`: text, not YAML
     if (/(?:^|[:-])\s+[|>][+-]?\d*\s*(?:#.*)?$/.test(line)) block = lead;
     else {
-      const code = line.replace(/(^|\s)#.*$/, "");
+      const code = stripComment(line);
       if (flowStart(code) >= 0) {
         let depth = flowDepth(code, 0), joined = code.trimEnd(), j = i;
         while (depth > 0 && j + 1 < raws.length && j - i < FLOW_LINES) {
           j++;
-          const next = raws[j].replace(/\t/g, "    ").replace(/(^|\s)#.*$/, "");
+          const next = stripComment(raws[j].replace(/\t/g, "    "));
           if (/^\s*$/.test(next)) continue;
           joined += " " + next.trim();
           depth = flowDepth(next, depth);
@@ -926,7 +942,7 @@ function extractCrons(text) {
     if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
     if (indent < 0) {
       if (onTop) {                                                                                     // `on: {schedule: [...]}` on one line
-        const inner = flowSequenceOf(line.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "").replace(/\s+#.*$/, ""), "schedule");       // an anchor or a tag in front of the value is not part of it
+        const inner = flowSequenceOf(stripComment(line.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "")), "schedule");       // an anchor or a tag in front of the value is not part of it
         if (inner !== null) for (const g of inner.matchAll(/\{([^}]*)\}/g)) flowItem(g[1]);
         continue;
       }
@@ -970,7 +986,7 @@ function flowTop(text) {
 }
 function hasDispatch(text) {
   for (const { line, onTop, onDirect } of yamlLines(text)) {
-    const code = line.replace(/(^|\s)#.*$/, "");
+    const code = stripComment(line);
     if (onTop) {                                                                                       // `on: workflow_dispatch`, `on: [push, workflow_dispatch]`, `on: {workflow_dispatch: {}}`
       const value = code.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/^\s*(?:[&!]\S+\s+)*/, "").trim(), top = flowTop(value);
       if (top !== null ? top.includes("workflow_dispatch") : /^["']?workflow_dispatch["']?$/.test(value)) return true;
@@ -1163,7 +1179,7 @@ function boardModel(models, nowMs) {
       const status = workflowStatus(wf, nowMs);
       const wfNode = add({ id: "w|" + m.repo + "|" + wf.id, wave: 1, kind: "workflow", repo: m.repo, short, code: codeOf(wf.path), title: wf.name, sub: off ? "đang tắt" : "", status, chip: STATUS_WORD[status],
                            ref: { path: wf.path } });
-      const trig = (id, kind, title, sub, extra) => link(add(Object.assign({ id: "t|" + m.repo + "|" + id, wave: 0, kind, repo: m.repo, short, code: kind === "cron" ? "CRON" : kind === "manual" ? "TAY" : "SỰ KIỆN", title, sub,
+      const trig = (id, kind, title, sub, extra) => link(add(Object.assign({ id: "t|" + m.repo + "|" + (off ? "off|" : "") + id, wave: 0, kind, repo: m.repo, short, code: kind === "cron" ? "CRON" : kind === "manual" ? "TAY" : "SỰ KIỆN", title, sub,
                                                                               status: off ? "blocked" : "ready", chip: off ? "Tắt" : "Sẵn sàng" }, extra || {})), wfNode);
       for (const cron of crons) trig("cron|" + cron, "cron", describeCron(cron), cronLabel(cron), { cron });
       const events = new Set((wf.runs || []).map((r) => r.event).filter(Boolean));
@@ -2040,12 +2056,14 @@ function schedule() {
 }
 function addRepos(names) {
   let added = 0;
+  const fresh = [];
   for (const name of names) {
     if (state.repos.some((r) => sameRepo(r, name))) continue;
     if (state.repos.length >= MAX_REPOS) { say("link-msg", "Tối đa " + MAX_REPOS + " repo (hạn mức API của GitHub).", "bad"); break; }
     state.repos.push(name); added++;
-    loadOne(name);
+    fresh.push(name);
   }
+  if (fresh.length) pool(fresh, 3, loadOne).catch(() => {});                                      // a bulk add is read three at a time like a refresh, not all at once
   saveStore(); render();
   return added;
 }

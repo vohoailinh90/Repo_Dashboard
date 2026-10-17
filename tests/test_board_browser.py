@@ -1491,6 +1491,38 @@ def test_a_workflow_that_is_switched_off_and_never_ran_still_shows_its_triggers_
     context.close()
 
 
+def test_adding_many_repositories_at_once_reads_three_at_a_time(browser):
+    names = [f"demo/b{i}" for i in range(8)]
+    context, page = new_page(browser, repos=())
+    for name in names:
+        page.gh.routes.update(app_routes(name))
+    held = []
+    for name in names:
+        context.route(f"https://api.github.com/repos/{name}", lambda route, request: route.fulfill(status=204, headers=PREFLIGHT) if request.method == "OPTIONS" else held.append((route, request.url)))
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.click("details.io summary")
+    page.fill("#io", "\n".join(names))
+    page.click("#import")
+    deadline = time.monotonic() + 6
+    while len(held) < 3 and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    page.wait_for_timeout(500)
+    assert len(held) == 3                                                                    # three repositories asked for at once; the other five wait their turn, not eight at once
+    for _ in range(8):                                                                       # let them through one wave at a time: no more than three are ever waiting together
+        batch = list(held)
+        held.clear()
+        for route, url in batch:
+            route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(page.gh.routes[f"/repos/{url.split('/repos/')[1]}"][1]))
+        page.wait_for_timeout(400)
+        assert len(held) <= 3
+        if not held:
+            break
+    open_tab(page, "repos")
+    wait(page, "[...document.querySelectorAll('#repo-grid .repo')].filter((e) => e.textContent.includes('PR mở')).length === 8")       # and all eight were read in the end
+    context.close()
+
+
 def test_a_repository_filter_whose_repository_is_gone_stops_filtering(browser):
     context, page = new_page(browser, repos=(REPO, "demo/two"))
     page.gh.routes.update(app_routes("demo/two"))

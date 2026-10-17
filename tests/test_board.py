@@ -33,7 +33,7 @@ FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normIn
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop, closestMinutes, coolOff")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop, closestMinutes, coolOff, stripComment")
 
 
 def _node(cases: list) -> list:
@@ -993,6 +993,35 @@ def test_the_week_plan_and_the_count_follow_the_zone_of_the_schedule():
     plan = _one("weekPlan", [_model(workflows=[wf])], NOW, 1)
     assert [(_utc(i["ms"])[0], i["cron"]) for i in plan["items"]] == [("2026-10-17T00:00Z", "CRON_TZ=Asia/Tokyo 0 9 * * *"), ("2026-10-17T01:00Z", "0 1 * * *")]
     assert _one("countScheduled", [_model(workflows=[wf])], NOW, NOW + 86400000) == 2
+
+
+def test_a_hash_inside_a_quoted_value_is_not_a_comment():
+    cases = [("a # b", "a "), ('x: "a # b" # c', 'x: "a # b" '), ("x: 'it''s # not' # c", "x: 'it''s # not' "), ("it's # c", "it's "), ("a#b", "a#b"), ("# all", ""),
+             ('k: "e\\" # q" # c', 'k: "e\\" # q" '), ("- 'a # b'", "- 'a # b'"), ("[a, 'b # c', d] # e", "[a, 'b # c', d] "), ("x:   # c", "x:   "), ("", "")]
+    assert _node([["stripComment", [t]] for t, _ in cases]) == [expected for _, expected in cases]
+    dispatch = [('on: {workflow_dispatch: {inputs: {reason: {description: "Issue # to run"}}}}\n', True), ("on: {workflow_dispatch: {inputs: {reason: {description: 'Issue # to run'}}}}\n", True),
+                ('on: [push, workflow_dispatch] # a "comment\n', True), ("on: {push: {}} # {workflow_dispatch: {}}\n", False),
+                ('on: {push: {paths: ["# x"]}, workflow_dispatch: {}}\n', True), ('on:\n  workflow_dispatch:\n    inputs: {a: {description: "#1 # two"}}\n', True)]
+    assert _node([["hasDispatch", [t]] for t, _ in dispatch]) == [expected for _, expected in dispatch]
+    crons = [("on: {schedule: [{cron: '0 5 * * *'}], push: {paths: [\"# x\"]}}\n", ["0 5 * * *"]), ("on: {push: {paths: [\"a # b\"]}, schedule: [{cron: '0 6 * * *'}]} # c\n", ["0 6 * * *"]),
+             ("on:\n  schedule: [\n    {cron: '0 7 * * *'},\n  ]\n  push:\n    paths: [\n      \"# x\"\n    ]\n", ["0 7 * * *"])]
+    assert _node([["extractCrons", [t]] for t, _ in crons]) == [expected for _, expected in crons]
+
+
+def test_the_same_trigger_of_a_workflow_that_is_on_and_one_that_is_off_is_two_nodes():
+    on = {"id": 1, "name": "A", "path": ".github/workflows/a.yml", "state": "active", "runs": [], "crons": ["0 1 * * *"], "dispatch": True}
+    off = {"id": 2, "name": "B", "path": ".github/workflows/b.yml", "state": "disabled_manually", "runs": [], "crons": ["0 1 * * *"], "dispatch": True}
+    for order in ((on, off), (off, on)):                                                    # the order of the list must not decide the state of a trigger
+        board = _one("boardModel", [_model(workflows=list(order))], NOW)
+        triggers = [n for n in board["nodes"] if n["kind"] in ("cron", "manual")]
+        assert sorted((n["kind"], n["status"]) for n in triggers) == [("cron", "blocked"), ("cron", "ready"), ("manual", "blocked"), ("manual", "ready")]
+        by_id = {n["id"]: n for n in board["nodes"]}
+        for e in board["edges"]:
+            src, dst = by_id[e["from"]], by_id[e["to"]]
+            if src["kind"] in ("cron", "manual"):
+                assert (src["status"] == "blocked") == (dst["sub"] == "đang tắt")                  # each trigger leads to a workflow in the same state
+    two_off = _one("boardModel", [_model(workflows=[off, {**off, "id": 3, "name": "C"}])], NOW)
+    assert len([n for n in two_off["nodes"] if n["kind"] == "cron"]) == 1                    # two that are both off still share one
 
 
 def test_a_workflow_that_is_switched_off_has_no_runs_to_come():
