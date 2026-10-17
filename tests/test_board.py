@@ -33,7 +33,7 @@ FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normIn
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl")
 
 
 def _node(cases: list) -> list:
@@ -154,7 +154,11 @@ def test_parse_repo_list_takes_json_or_lines_and_drops_duplicates_and_junk():
 
 
 @pytest.mark.parametrize("path,expected", [(".github/workflows/ci.yml", True), (".github/workflows/a-b_c.1.yaml", True), (".github/workflows/../x.yml", False),
-                                           ("dynamic/pages/pages-build-deployment", False), (".github/workflows/a/b.yml", False), (".github/workflows/x.sh", False)])
+                                           ("dynamic/pages/pages-build-deployment", False), (".github/workflows/a/b.yml", False), (".github/workflows/x.sh", False),
+                                           (".github/workflows/release candidate.yml", True), (".github/workflows/ünï-çödé.yaml", True), (".github/workflows/日本語.yml", True),
+                                           (".github/workflows/a?b#c%d.yml", True),            # legal names: they are encoded wherever they go into a URL
+                                           (".github/workflows/..yml", False), (".github/workflows/.yml", False), (".github/workflows/a\\b.yml", False), (".github/workflows/a\nb.yml", False),
+                                           ("x/.github/workflows/a.yml", False), (".github/workflows/a.yml/", False), ("", False), (None, False)])
 def test_only_real_workflow_files_are_read(path, expected):
     assert _one("safeWorkflowPath", path) is expected
 
@@ -989,3 +993,18 @@ def test_a_long_workflow_path_is_kept_whole_so_its_file_can_still_be_read():
     w = _one("normWorkflow", {"id": 1, "name": "n", "path": path, "state": "active"})
     assert w["path"] == path and _one("safeWorkflowPath", w["path"]) is True
     assert len(_one("normWorkflow", {"id": 1, "name": "n", "path": ".github/workflows/" + "a" * 400 + ".yml"})["path"]) == 300       # still bounded
+
+
+def test_a_path_is_encoded_segment_by_segment_wherever_it_goes_into_a_url():
+    assert _one("pathUrl", ".github/workflows/release candidate #1.yml") == ".github/workflows/release%20candidate%20%231.yml"
+    assert _one("pathUrl", ".github/workflows/日本語?.yml") == ".github/workflows/%E6%97%A5%E6%9C%AC%E8%AA%9E%3F.yml"
+
+
+def test_a_workflow_can_be_started_by_hand_only_when_on_says_so():
+    cases = [("on:\n  workflow_dispatch:\n  push:\n", True), ("on:\n  workflow_dispatch: {}\n", True), ("on:\n  - push\n  - workflow_dispatch\n", True), ("on: workflow_dispatch\n", True),
+             ("on: [push, workflow_dispatch]", True), ("\"on\":\n  workflow_dispatch:\n", True), ("on:\n  workflow_dispatch:\n    inputs:\n      x:\n        required: true\n", True),
+             ("on:\n  push:\njobs:\n  a:\n    steps:\n      - name: start workflow_dispatch of the other one\n        run: gh workflow run x -f workflow_dispatch=1\n        if: github.event_name == 'workflow_dispatch'\n", False),
+             ("on:\n  push: # workflow_dispatch later\n", False), ("on: push # workflow_dispatch is not enabled\n", False), ("on: push\n# on: workflow_dispatch\n", False), ("on:\n  push:\n    branches: [workflow_dispatch]\n", False), ("on:\n  # workflow_dispatch:\n  push:\n", False),
+             ("name: workflow_dispatch\non: push\n", False), ("on:\n  workflow_dispatchx:\n", False), ("on: [workflow_dispatch_two]", False),
+             ("on: push\njobs:\n  a:\n    steps:\n      - run: |\n          echo on:\n          workflow_dispatch\n", False), ("", False)]
+    assert _node([["hasDispatch", [text]] for text, _ in cases] + [["hasDispatch", [None]]]) == [expected for _, expected in cases] + [False]

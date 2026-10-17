@@ -786,6 +786,33 @@ def test_the_repository_picker_reads_further_pages_up_to_five(browser):
         context.close()
 
 
+def test_a_workflow_file_with_a_space_in_its_name_is_read_and_linked_with_the_name_encoded(browser):
+    context, page = new_page(browser)
+    base = f"/repos/{REPO}"
+    page.gh.routes[f"{base}/actions/workflows"] = (200, {"workflows": [{"id": 301, "name": "release", "path": ".github/workflows/release candidate #1.yml", "state": "active"}]})
+    page.gh.routes[f"{base}/actions/runs"] = (200, {"workflow_runs": []})
+    page.gh.routes[f"{base}/actions/workflows/301/runs"] = (200, {"workflow_runs": []})
+    page.gh.routes[f"{base}/contents/.github/workflows/release%20candidate%20%231.yml"] = (200, "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 18 * * *'\n")
+    page.goto(PAGE_URL)
+    repos(page)
+    wait(page, "document.querySelector('.sched') !== null")
+    assert "hằng ngày 18:00 UTC" in text(page, ".sched")
+    assert page.get_attribute("details.wf a >> text=Xem file workflow", "href") == "https://github.com/demo/app/blob/HEAD/.github/workflows/release%20candidate%20%231.yml"
+    open_tab(page, "home")
+    assert page.get_attribute("#ready-now a", "href") == "https://github.com/demo/app/actions/workflows/release%20candidate%20%231.yml"          # the other link built from a path
+    context.close()
+
+
+def test_the_word_workflow_dispatch_in_a_script_does_not_make_a_workflow_startable_by_hand(browser):
+    for yaml, ready in (("on:\n  workflow_dispatch:\n", "1"), ("on:\n  push:\njobs:\n  a:\n    steps:\n      - run: echo workflow_dispatch\n", "0")):
+        context, page = new_page(browser)
+        page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/weekly.yml"] = (200, yaml)
+        page.goto(PAGE_URL)
+        loaded(page)
+        assert text(page, "#ready-count") == ready and ("Weekly scan" in text(page, "#ready-now")) is (ready == "1"), yaml
+        context.close()
+
+
 def test_a_workflow_with_a_very_long_file_name_still_has_its_schedule_read(browser):
     context, page = new_page(browser)
     base = f"/repos/{REPO}"

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-4AhIEt4BpSMT3m61pxS15NLrDWjbcMcvdSXXpNz0D/8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-TKaX2irMflHQ5Vvf1HbMozNDSSNc28Y+SRjJIPeg6f8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -527,7 +527,13 @@ function parseRepoList(text) {
   }
   return { repos, rejected };
 }
-function safeWorkflowPath(p) { return /^\.github\/workflows\/[A-Za-z0-9._-]+\.ya?ml$/.test(String(p)); }
+// A workflow file is a .yml or .yaml directly under .github/workflows. Any file name GitHub allows (spaces, accents) is fine as long as it has no slash, backslash or control
+// character and is not made of dots only; wherever the path goes into a URL it is encoded segment by segment (pathUrl).
+function safeWorkflowPath(p) {
+  const m = /^\.github\/workflows\/([^/\\\x00-\x1f\x7f]+)\.ya?ml$/.exec(String(p));
+  return !!m && !/^\.+$/.test(m[1]);
+}
+function pathUrl(path) { return String(path).split("/").map(encodeURIComponent).join("/"); }
 
 // ---- what GitHub returned, kept to the fields this page draws and cut to a length it can lay out ----
 function normInfo(i) {
@@ -783,9 +789,26 @@ function cronLabel(expr) {                                                      
   const c = parseCron(expr);
   return c ? c.fields.join(" ") + " (" + (c.tz || "UTC") + ")" : String(expr);
 }
+// The lines of a workflow file that are YAML (not blank, not a comment, not the body of a block scalar such as `run: |`), each with where it stands: `onTop` for the
+// top-level `on:` line itself, `onDirect` for a line that is a direct child of `on` (the first line under it fixes how its keys are indented).
+function yamlLines(text) {
+  const out = [];
+  let block = -1, inOn = false, onChild = -1;
+  for (const raw of String(text == null ? "" : text).split(/\r?\n/)) {
+    const line = raw.replace(/\t/g, "    ");
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    const lead = line.length - line.trimStart().length;
+    if (block >= 0) { if (lead > block) continue; block = -1; }                      // inside `run: |`: text, not YAML
+    if (/(?:^|[:-])\s+[|>][+-]?\d*\s*(?:#.*)?$/.test(line)) block = lead;
+    if (lead === 0) { inOn = /^(?:on|"on"|'on')\s*:/.test(line); onChild = -1; }                       // a top-level key: `on` opens its scope, any other closes it
+    else if (inOn && onChild < 0) onChild = lead;
+    out.push({ line, lead, onTop: lead === 0 && inOn, onDirect: inOn && lead === onChild });
+  }
+  return out;
+}
 function extractCrons(text) {
   const out = [];
-  let indent = -1, block = -1, item = null, inOn = false, onChild = -1;
+  let indent = -1, item = null;
   const KEY = (key) => new RegExp("^\\s*(?:-\\s*)?" + key + "\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|([^#\\s][^#]*?))\\s*(?:#.*)?$");
   const CRON_LINE = KEY("cron"), ZONE_LINE = KEY("timezone");
   const pick = (m) => (m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]).trim();
@@ -799,17 +822,10 @@ function extractCrons(text) {
     const c = /cron\s*:\s*(["'])(.*?)\1/.exec(inner), z = /timezone\s*:\s*(?:(["'])(.*?)\1|([^,\s}]+))/.exec(inner);
     if (c) keep(c[2].trim(), z ? (z[2] !== undefined ? z[2] : z[3]).trim() : undefined);
   };
-  for (const raw of String(text == null ? "" : text).split(/\r?\n/)) {
-    const line = raw.replace(/\t/g, "    ");
-    if (/^\s*(#.*)?$/.test(line)) continue;
-    const lead = line.length - line.trimStart().length;
-    if (block >= 0) { if (lead > block) continue; block = -1; }                      // inside `run: |`: text, not YAML
-    if (/(?:^|[:-])\s+[|>][+-]?\d*\s*(?:#.*)?$/.test(line)) block = lead;
-    if (lead === 0) { inOn = /^(?:on|"on"|'on')\s*:/.test(line); onChild = -1; }                       // a top-level key: `on` opens its scope, any other closes it
-    else if (inOn && onChild < 0) onChild = lead;                                                      // the first line inside `on` tells how its keys are indented
+  for (const { line, lead, onDirect } of yamlLines(text)) {
     if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
     if (indent < 0) {
-      if (!inOn || lead !== onChild) continue;                                                         // a `schedule` key anywhere else (a matrix, an input) is not the trigger
+      if (!onDirect) continue;                                                                         // a `schedule` key anywhere else (a matrix, an input) is not the trigger
       const flow = /^\s*schedule\s*:\s*\[(.*)\]\s*(#.*)?$/.exec(line);
       if (flow) { for (const g of flow[1].matchAll(/\{([^}]*)\}/g)) flowItem(g[1]); continue; }
       if (/^\s*schedule\s*:\s*(#.*)?$/.test(line)) indent = lead;
@@ -825,7 +841,17 @@ function extractCrons(text) {
   flush();
   return out.filter((c) => parseCron(c));
 }
-function hasDispatch(text) { return String(text == null ? "" : text).split(/\r?\n/).some((l) => !/^\s*#/.test(l) && /\bworkflow_dispatch\b/.test(l)); }
+// Whether `on` names workflow_dispatch: `on: workflow_dispatch`, `on: [push, workflow_dispatch]`, a list item or a key directly under `on`. The word in a step name, a
+// script or a condition (`github.event_name == 'workflow_dispatch'`) does not make a manual trigger.
+function hasDispatch(text) {
+  const word = /(?:^|[\s,\[{"'-])workflow_dispatch(?:$|[\s,\]}"':])/;
+  for (const { line, onTop, onDirect } of yamlLines(text)) {
+    const code = line.replace(/(^|\s)#.*$/, "");
+    if (onTop && word.test(code.replace(/^(?:on|"on"|'on')\s*:/, ""))) return true;
+    if (onDirect && /^\s*(?:-\s*)?["']?workflow_dispatch["']?\s*(?::.*)?$/.test(code)) return true;
+  }
+  return false;
+}
 
 // ---- the quota: below this the page stops asking by itself ----
 // (a quota that has reset since it was last read is not low any more)
@@ -1389,7 +1415,7 @@ const STATE_WORD = { done: "xong", running: "đang chạy", waiting: "chờ bạ
 
 function fmtN(n) { return Number(n).toLocaleString("vi-VN"); }
 function clockText(ms) { return new Date(ms).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }); }
-function workflowUrl(repo, path) { return safeWorkflowPath(path) ? gh(repo, "/actions/workflows/" + path.split("/").pop()) : gh(repo, "/actions"); }
+function workflowUrl(repo, path) { return safeWorkflowPath(path) ? gh(repo, "/actions/workflows/" + encodeURIComponent(path.split("/").pop())) : gh(repo, "/actions"); }
 
 function rateText() {
   const r = state.rate;
@@ -1592,7 +1618,7 @@ function workflowRow(model, wf) {
     slot.append(h("p", { class: "small muted" }, "Lượt gần nhất #" + latest.number + " (" + latest.event + (latest.branch ? ", nhánh " + latest.branch : "") + ") · ", extLink(gh(model.repo, "/actions/runs/" + latest.id), "Mở trên GitHub")),
       ...pipelineBody(model, latest).filter(Boolean));
   } else slot.append(h("p", { class: "small muted", text: "GitHub không trả lượt chạy nào cho workflow này (chưa từng chạy, hoặc các lượt đã bị xóa)." }));
-  if (safeWorkflowPath(wf.path)) slot.append(h("p", { class: "small" }, extLink(gh(model.repo, "/blob/HEAD/" + wf.path), "Xem file workflow"), wf.dispatch ? " · có thể chạy tay (workflow_dispatch)" : ""));
+  if (safeWorkflowPath(wf.path)) slot.append(h("p", { class: "small" }, extLink(gh(model.repo, "/blob/HEAD/" + pathUrl(wf.path)), "Xem file workflow"), wf.dispatch ? " · có thể chạy tay (workflow_dispatch)" : ""));
   d.append(slot);
   d.open = state.open.has(k);
   d.addEventListener("toggle", () => {
