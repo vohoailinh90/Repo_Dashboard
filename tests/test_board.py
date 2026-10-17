@@ -33,7 +33,7 @@ FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normIn
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop, closestMinutes")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop, closestMinutes, coolOff")
 
 
 def _node(cases: list) -> list:
@@ -371,6 +371,35 @@ def test_cron_runs_match_a_minute_by_minute_oracle():
     for case, js, py in zip(cases, got, expected):
         assert js == py, case
     assert any(expected), "the oracle found nothing at all: the comparison would prove nothing"
+
+
+def test_yaml_anchors_in_a_schedule_block_are_read_and_an_alias_is_resolved_only_when_it_can_be():
+    cases = [("on:\n  schedule: &nightly\n    - cron: '0 2 * * *'\n", ["0 2 * * *"]), ("on:\n  schedule: &nightly # every night\n    - cron: '0 3 * * *'\n", ["0 3 * * *"]),
+             ("on:\n  schedule: !!seq\n    - cron: '0 4 * * *'\n", ["0 4 * * *"]), ("on:\n  schedule: &s [{cron: '0 5 * * *'}]\n", ["0 5 * * *"]),
+             ("on:\n  schedule:\n    - &first\n      cron: '0 6 * * *'\n", ["0 6 * * *"]), ("on:\n  schedule:\n    - &first {cron: '0 7 * * *'}\n", ["0 7 * * *"]),
+             ("on:\n  schedule:\n    - &c cron: '0 8 * * *'\n", ["0 8 * * *"]), ("on:\n  schedule:\n    - cron: &c '0 9 * * *'\n", ["0 9 * * *"]),
+             ("env:\n  NIGHTLY: &n '0 10 * * *'\non:\n  schedule:\n    - cron: *n\n", ["0 10 * * *"]),                       # an alias of a value written elsewhere in the file
+             ("on:\n  schedule:\n    - cron: *missing\n", []),                                                             # an alias that points at nothing: left out, not guessed
+             ("tz:\n  zone: &z Asia/Tokyo\non:\n  schedule:\n    - cron: '0 11 * * *'\n      timezone: *z\n", ["CRON_TZ=Asia/Tokyo 0 11 * * *"]),
+             ("on:\n  schedule:\n    - cron: '0 12 * * *'\n      timezone: *nope\n", []),                                   # an unknown zone alias is not UTC
+             ("on:\n  schedule:\n    - cron: '0 13 * * *'\n      timezone: &t Asia/Tokyo\n", ["CRON_TZ=Asia/Tokyo 0 13 * * *"]),
+             ("on:\n  schedule: *sched\n", []),                                                                           # a whole block anchored elsewhere is not followed
+             ("on:\n  schedule: nope\n    - cron: '0 14 * * *'\n", []),
+             ("jobs:\n  a:\n    env: &n '0 15 * * *'\n", []),
+             ("on:\n  schedule:\n    - cron: '0 16 * * *'  # &keep\n", ["0 16 * * *"])]
+    assert _node([["extractCrons", [t]] for t, _ in cases]) == [expected for _, expected in cases]
+
+
+def test_a_secondary_rate_limit_is_told_from_the_hourly_count_and_from_a_refusal():
+    cases = [((429, "30", "4000", "", 0), 30000), ((403, "120", "4000", "You have exceeded a secondary rate limit", 0), 120000),
+             ((403, None, "4000", "You have exceeded a secondary rate limit. Please wait a few minutes", 0), 60000), ((403, None, "4000", "You have exceeded a secondary rate limit", 1), 120000),
+             ((403, None, "4000", "You have exceeded a secondary rate limit", 2), 240000), ((403, None, "4000", "You have exceeded a secondary rate limit", 10), 900000),
+             ((429, None, "4000", "", 0), 60000), ((403, None, "4000", "Abuse detection mechanism", 0), 60000),
+             ((403, None, "0", "API rate limit exceeded", 0), 0), ((403, "60", "0", "x", 0), 0),                       # the hourly count ran out: its reset time governs
+             ((403, None, "4000", "Resource not accessible by personal access token", 0), 0), ((403, None, "4000", "Must have admin rights", 0), 0),
+             ((404, "30", "4000", "", 0), 0), ((200, "30", "4000", "", 0), 0), ((403, "0", "100", "", 0), 0), ((403, "99999", "100", "", 0), 3600000),
+             ((429, "10", None, "", 0), 10000), ((403, "abc", "100", "", 0), 0), ((403, "", "100", "secondary rate limit", 0), 60000)]
+    assert _node([["coolOff", list(args)] for args, _ in cases]) == [expected for _, expected in cases]
 
 
 def test_a_cron_closer_than_five_minutes_runs_no_more_often_than_every_five_and_says_so():

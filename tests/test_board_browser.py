@@ -24,7 +24,7 @@ TOKEN = "github_pat_TESTONLY_not_a_real_token_0123456789"
 REPO = "demo/app"
 STORE_KEY = "radar-board.v1"
 VIEWS = ["home", "board", "repos", "schedule", "inbox", "agents", "health", "settings"]
-CORS = {"access-control-allow-origin": "*", "access-control-expose-headers": "etag, x-ratelimit-remaining, x-ratelimit-limit, x-ratelimit-reset"}
+CORS = {"access-control-allow-origin": "*", "access-control-expose-headers": "etag, retry-after, x-ratelimit-remaining, x-ratelimit-limit, x-ratelimit-reset"}
 PREFLIGHT = {**CORS, "access-control-allow-headers": "authorization, accept, x-github-api-version, if-none-match", "access-control-allow-methods": "GET, OPTIONS"}
 EVIL = '<img src=x onerror="window.__pwn=1">'
 
@@ -91,6 +91,7 @@ class Github:
         self.remaining = 4990
         self.reset = int(time.time()) + 3000                      # one window: GitHub gives every answer of it the same reset time
         self.not_modified = 0
+        self.extra: dict = {}                                     # headers added to every answer (a Retry-After, for example)
 
     def handle(self, route, request):
         if request.method == "OPTIONS":
@@ -98,7 +99,7 @@ class Github:
         path = request.url.split("https://api.github.com", 1)[1]
         clean = path.split("?", 1)[0]
         self.requests.append({"method": request.method, "path": path, "clean": clean, "headers": request.headers})
-        rate = {"x-ratelimit-remaining": str(self.remaining), "x-ratelimit-limit": "5000", "x-ratelimit-reset": str(self.reset)}
+        rate = {"x-ratelimit-remaining": str(self.remaining), "x-ratelimit-limit": "5000", "x-ratelimit-reset": str(self.reset), **self.extra}
         if clean not in self.routes:
             return route.fulfill(status=404, headers={**CORS, **rate}, content_type="application/json", body='{"message":"Not Found"}')
         status, body = self.routes[clean]
@@ -1237,6 +1238,103 @@ def test_out_of_quota_the_page_stops_sending_until_the_reset(browser):
     wait(page, "document.getElementById('connect-msg').className.includes('ok')")
     page.wait_for_timeout(300)
     assert len(page.gh.requests) > 12
+    context.close()
+
+
+SECONDARY = {"message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}
+
+
+def test_after_a_secondary_rate_limit_the_page_waits_as_long_as_github_asks_and_then_goes_on(browser):
+    context, page = new_page(browser, interval=30)
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('live-text').textContent === 'live'")
+    quiet(page)
+    good = page.gh.routes
+    page.gh.routes = {**good, f"/repos/{REPO}/actions/runs": (403, SECONDARY)}              # a secondary limit on one call: 403, the hourly count is far from empty, Retry-After says how long
+    page.gh.extra = {"retry-after": "300"}                                                  # five minutes: more than the minute the page would take for itself
+    page.click("#refresh")
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    assert "chờ đến" in text(page, "#rate") and "thứ cấp" in text(page, "#rate")
+    seen = quiet(page)
+
+    def card():                                                                             # a repository that was read shows its counts; one that could not be read does not
+        repos(page)
+        return text(page, "#repo-grid .repo")
+
+    assert "PR mở" in card() and "Không đọc được các lượt chạy" in card()                   # the repository is on the page, with a warning
+    open_tab(page, "settings")
+    page.click("#refresh")                                                                  # the person asks again during the wait: nothing is sent, and what is on the page stays
+    page.wait_for_timeout(300)
+    assert len(page.gh.requests) == seen and "PR mở" in card()
+    page.gh.routes, page.gh.extra = good, {}                                                # GitHub is fine again, but the wait is not over
+    page.clock.run_for(100_000)                                                             # three timer ticks, past a minute and inside the five
+    page.wait_for_timeout(400)
+    assert len(page.gh.requests) == seen and text(page, "#live-text") == "tạm dừng" and "PR mở" in card()
+    page.clock.run_for(250_000)                                                             # past it (a tick lands every 30 seconds): the timer works again by itself, and the indicator says so
+    deadline = time.monotonic() + 6
+    while len(page.gh.requests) == seen and time.monotonic() < deadline:
+        page.wait_for_timeout(100)
+    assert len(page.gh.requests) > seen
+    wait(page, "document.getElementById('live-text').textContent === 'live'")
+    open_tab(page, "settings")
+    assert "chờ đến" not in text(page, "#rate")
+    context.close()
+
+
+def test_a_look_at_many_repositories_stops_starting_new_ones_once_github_asks_to_wait(browser):
+    names = [f"demo/r{i}" for i in range(6)]
+    context, page = new_page(browser, repos=names)
+    page.gh.routes = {f"/repos/{r}": (403, SECONDARY) for r in names}
+    page.gh.extra = {"retry-after": "60"}
+    page.goto(PAGE_URL)
+    open_tab(page, "repos")
+    wait(page, "document.querySelectorAll('.repo p.bad').length === 6")
+    assert len(page.gh.requests) == 12                                                      # three repositories at a time, four calls each; the other three were never sent
+    context.close()
+
+
+def test_a_new_token_ends_the_wait_after_a_secondary_rate_limit(browser):
+    context, page = new_page(browser, interval=30)
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('live-text').textContent === 'live'")
+    quiet(page)
+    good = page.gh.routes
+    page.gh.routes = {path: (403, SECONDARY) for path in good}
+    page.gh.extra = {"retry-after": "300"}
+    page.click("#refresh")
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    seen = quiet(page)
+    page.gh.routes, page.gh.extra = good, {}
+    page.fill("#token", TOKEN + "2")                                                        # another reader: the wait was for the old one
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('live-text').textContent === 'live'")
+    quiet(page)
+    assert len(page.gh.requests) > seen and "chờ đến" not in text(page, "#rate")
+    context.close()
+
+
+def test_a_refusal_that_is_not_a_rate_limit_does_not_make_the_page_wait(browser):
+    context, page = new_page(browser, interval=30)
+    page.goto(PAGE_URL)
+    loaded(page)
+    open_tab(page, "settings")
+    page.gh.routes = {path: (403, {"message": "Resource not accessible by personal access token"}) for path in page.gh.routes}
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('connect-msg').className.includes('ok')")
+    quiet(page)
+    assert text(page, "#live-text") == "live" and "chờ đến" not in text(page, "#rate")             # a permission problem is not a wait
+    seen = len(page.gh.requests)
+    page.click("#refresh")
+    page.wait_for_timeout(500)
+    assert len(page.gh.requests) > seen                                                      # and the next refresh is sent
     context.close()
 
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-RLCRJEDnKnVBnNWFo8+SrF4J2iMEYY4vblrpfIUeoYQ='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-D6vZqfq8ZYpzXotyROMrV+jIIlfY2gGgAYBBSGb9vWo='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -861,11 +861,19 @@ function innerOf(t, open) {                                                     
 function extractCrons(text) {
   const out = [];
   let indent = -1, item = null;
-  const KEY = (key) => new RegExp("^\\s*(?:-\\s*)?[\"']?" + key + "[\"']?\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|([^#\\s][^#]*?))\\s*(?:#.*)?$");
+  // YAML anchors (`&name`) may stand before a key, an item or a value, and `*name` may stand for a value written elsewhere in the file as `&name value`. A list or a mapping
+  // anchored elsewhere and pointed at by an alias is not resolved: that schedule is left out, never guessed.
+  const anchors = new Map();
+  for (const { line } of yamlLines(text)) {
+    const a = /(?:^|\s)&([\w-]+)\s+(?:"([^"]*)"|'([^']*)'|([^#\s][^#]*?))\s*(?:#.*)?$/.exec(line);
+    if (a) anchors.set(a[1], (a[2] !== undefined ? a[2] : a[3] !== undefined ? a[3] : a[4]).trim());
+  }
+  const KEY = (key) => new RegExp("^\\s*(?:-\\s*)?(?:&\\S+\\s+)?[\"']?" + key + "[\"']?\\s*:\\s*(?:&\\S+\\s+)?(?:\"([^\"]*)\"|'([^']*)'|([^#\\s][^#]*?))\\s*(?:#.*)?$");
   const CRON_LINE = KEY("cron"), ZONE_LINE = KEY("timezone");
-  const pick = (m) => (m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]).trim();
+  const resolve = (v) => { const a = /^\*([\w-]+)$/.exec(v); return a ? (anchors.has(a[1]) ? anchors.get(a[1]) : null) : v; };       // null: an alias that points at nothing readable
+  const pick = (m) => resolve((m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]).trim());
   const keep = (cron, tz) => {                                                                      // `timezone:` is optional; a zone this browser does not know shows nothing rather than a wrong time
-    if (cron === undefined || /^CRON_TZ=/i.test(cron)) return;
+    if (cron === undefined || cron === null || /^CRON_TZ=/i.test(cron)) return;                    // (an alias of an unreadable zone is null: not a zone, so left out as well)
     if (tz === undefined) out.push(cron);
     else if (validZone(tz)) out.push("CRON_TZ=" + tz + " " + cron);
   };
@@ -883,13 +891,13 @@ function extractCrons(text) {
         continue;
       }
       if (!onDirect) continue;                                                                         // a `schedule` key anywhere else (a matrix, an input) is not the trigger
-      const flow = /^\s*["']?schedule["']?\s*:\s*\[(.*)\]\s*(#.*)?$/.exec(line);
+      const flow = /^\s*["']?schedule["']?\s*:\s*(?:&\S+\s+)?\[(.*)\]\s*(#.*)?$/.exec(line);
       if (flow) { for (const g of flow[1].matchAll(/\{([^}]*)\}/g)) flowItem(g[1]); continue; }
-      if (/^\s*["']?schedule["']?\s*:\s*(#.*)?$/.test(line)) indent = lead;
+      if (/^\s*["']?schedule["']?\s*:\s*(?:[&!]\S+\s*)*(#.*)?$/.test(line)) indent = lead;
       continue;
     }
     if (/^\s*-/.test(line)) flush();                                                                // a new entry of the list starts: the one before is complete
-    const inline = /^\s*-\s*\{(.*)\}\s*(#.*)?$/.exec(line);
+    const inline = /^\s*-\s*(?:&\S+\s+)?\{(.*)\}\s*(#.*)?$/.exec(line);
     if (inline) { flowItem(inline[1]); continue; }
     const c = CRON_LINE.exec(line), z = ZONE_LINE.exec(line);
     if (c) { item = item || {}; item.cron = pick(c); }
@@ -941,6 +949,16 @@ function mergeRate(cur, next) {
   if (next.resetMs < cur.resetMs) return cur;
   if (next.resetMs > cur.resetMs) return next;
   return { remaining: Math.min(cur.remaining, next.remaining), limit: next.limit, resetMs: next.resetMs };
+}
+// A secondary rate limit is a 403 or 429 that is not the running out of the hourly count. GitHub asks to wait `retry-after` seconds; without that header, at least a minute, and
+// longer each time it happens again. Milliseconds to wait, 0 when the answer is not one.
+function coolOff(status, retryAfter, remaining, message, hits) {
+  if (status !== 403 && status !== 429) return 0;
+  if (remaining !== null && remaining !== undefined && remaining !== "" && Number(remaining) === 0) return 0;      // the hourly count ran out: the quota's own reset time governs
+  const secs = retryAfter === null || retryAfter === undefined || retryAfter === "" ? NaN : Number(retryAfter);
+  if (Number.isFinite(secs) && secs >= 0) return Math.min(secs, 3600) * 1000;
+  if (status === 429 || /secondary rate limit|abuse detection/i.test(String(message == null ? "" : message))) return Math.min(60000 * 2 ** Math.max(0, hits || 0), 900000);
+  return 0;
 }
 function lowOnQuota(rate, nowMs) {
   if (!rate || !(rate.limit > 0) || (rate.resetMs && nowMs >= rate.resetMs)) return false;
@@ -1317,7 +1335,7 @@ function buildDemo(spec, nowMs) {
 // ---- the page ----
 const $ = (id) => document.getElementById(id);
 const state = { repos: [], models: new Map(), demo: false, saved: null, office: null, realOffice: null, rate: null, interval: 60, open: new Set(), jobsCache: new Map(),
-                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0,
+                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 },
                 view: "home", theme: "neon", mode: "auto", group: "flow", filter: { repo: "", status: "", q: "", rest: "collapse" }, focus: null, chain: null, boardEdges: [], rowOpen: new Map(), calls: 0 };
 const keyOf = (repo) => repo.toLowerCase();
 
@@ -1364,6 +1382,7 @@ function noteRate(headers) {
   const remaining = parseInt(headers.get("x-ratelimit-remaining"), 10), limit = parseInt(headers.get("x-ratelimit-limit"), 10), reset = parseInt(headers.get("x-ratelimit-reset"), 10);
   if (Number.isFinite(remaining) && Number.isFinite(limit)) { state.rate = mergeRate(state.rate, { remaining, limit, resetMs: Number.isFinite(reset) ? reset * 1000 : null }); renderRate(); }
 }
+function cooling() { return state.cool.until > Date.now(); }                                      // GitHub asked to wait (a secondary rate limit): nothing is sent until then
 async function call(path, opts) {
   if (state.demo) return { status: 0, data: null };                                              // the demo contacts nobody: a load that was under way when it began asks no more
   const raw = !!(opts && opts.raw);
@@ -1372,6 +1391,7 @@ async function call(path, opts) {
   const slot = (raw ? "raw:" : "") + path, known = state.etags.get(slot), gen = state.gen, quota = state.rate;
   // Out of quota with the reset still ahead: asking again only earns the same refusal, and a long list would send hundreds of them.
   if (quota && quota.remaining === 0 && quota.resetMs && Date.now() < quota.resetMs) return { status: 403, data: { message: "API rate limit exceeded (request not sent)" } };
+  if (cooling()) return { status: 403, data: { message: "secondary rate limit: GitHub asked to wait (request not sent)" } };
   if (known) headers["If-None-Match"] = known.etag;
   let res;
   try { res = await fetch(API + path, { method: "GET", headers, cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" }); }
@@ -1383,6 +1403,11 @@ async function call(path, opts) {
   try { data = raw ? await res.text() : await res.json(); } catch (e) { data = null; }
   const etag = res.headers.get("etag");
   if (res.status === 200 && etag && gen === state.gen) state.etags.set(slot, { etag, data });      // an answer to a question asked before the token changed is not kept
+  const wait = coolOff(res.status, res.headers.get("retry-after"), res.headers.get("x-ratelimit-remaining"), data && data.message, state.cool.hits);
+  if (gen === state.gen) {
+    if (wait > 0) { state.cool.until = Math.max(state.cool.until, Date.now() + wait); state.cool.hits++; renderRate(); setTimeout(renderRate, Math.min(wait, 3600000) + 100); }
+    else if (res.status < 400) state.cool.hits = 0;                                                  // answered well: the next limit starts the wait again from a minute
+  }
   return { status: res.status, data };
 }
 async function cached(name, ttlMs, fn) {
@@ -1529,11 +1554,12 @@ function clockText(ms) { return new Date(ms).toLocaleTimeString("vi-VN", { hour:
 function workflowUrl(repo, path) { return safeWorkflowPath(path) ? gh(repo, "/actions/workflows/" + encodeURIComponent(path.split("/").pop())) : gh(repo, "/actions"); }
 
 function rateText() {
-  const r = state.rate;
-  if (!r) return "";
+  const r = state.rate, cool = coolText();
+  if (!r) return cool;
   return "Hạn mức GitHub còn " + fmtN(r.remaining) + "/" + fmtN(r.limit) + (r.resetMs ? " (đặt lại lúc " + clockText(r.resetMs) + ")" : "")
-    + (lowOnQuota(r, Date.now()) && state.interval && token() ? ". Tự làm mới tạm dừng vì sắp hết hạn mức; bấm Làm mới khi cần." : "");
+    + (lowOnQuota(r, Date.now()) && state.interval && token() ? ". Tự làm mới tạm dừng vì sắp hết hạn mức; bấm Làm mới khi cần." : "") + (cool ? ". " + cool : "");
 }
+function coolText() { return cooling() ? "GitHub yêu cầu chờ đến " + clockText(state.cool.until) + " (giới hạn thứ cấp): trang không gửi yêu cầu nào trước đó." : ""; }
 function renderRate() {
   const r = state.rate, text = rateText();
   $("rate").textContent = text;
@@ -1545,6 +1571,7 @@ function renderRate() {
 function renderLive() {
   let cls = "live", text = "thủ công", tip = "Không tự làm mới. Chọn chu kỳ ở Cài đặt và dán token để tự làm mới.";
   if (state.demo) { cls += " is-warn"; text = "mẫu"; tip = "Dữ liệu mẫu, không gọi GitHub."; }
+  else if (cooling()) { cls += " is-warn"; text = "tạm dừng"; tip = coolText(); }
   else if (state.interval && token()) {
     if (lowOnQuota(state.rate, Date.now())) { cls += " is-warn"; text = "tạm dừng"; tip = "Sắp hết hạn mức GitHub: tự làm mới tạm dừng."; }
     else { cls += " is-live"; text = "live"; tip = "Tự làm mới mỗi " + state.interval + " giây."; }
@@ -1929,6 +1956,7 @@ function enterDemoData() {
 async function refreshAll() {
   if (state.demo) { enterDemoData(); render(); return; }
   if (state.refreshing) { state.again = true; return; }
+  if (cooling()) { renderRate(); return; }                                                        // GitHub asked to wait: what is on the page stays, nothing is sent
   state.refreshing = true;
   $("refresh").disabled = true;
   try { await pool(state.repos, 3, loadOne); } finally { state.refreshing = false; $("refresh").disabled = false; }
@@ -1942,14 +1970,14 @@ function clearCaches() {
   for (const k of [...state.epoch.keys()]) state.epoch.set(k, state.epoch.get(k) + 1);
   if (state.saved) state.saved.models = new Map();
   state.pickList = []; $("pick-list").replaceChildren(); $("io").value = ""; say("link-msg", "", "");
-  state.rate = null; renderRate();
+  state.rate = null; state.cool = { until: 0, hits: 0 }; renderRate();
 }
 function schedule() {
   clearTimeout(state.timer);
   const seconds = state.interval;
   if (!seconds || state.demo) return;
   state.timer = setTimeout(async () => {
-    if (!document.hidden && token() && !lowOnQuota(state.rate, Date.now())) await refreshAll();
+    if (!document.hidden && token() && !lowOnQuota(state.rate, Date.now())) await refreshAll();                    // (a wait GitHub asked for is kept by refreshAll)
     schedule();
   }, seconds * 1000);
 }
