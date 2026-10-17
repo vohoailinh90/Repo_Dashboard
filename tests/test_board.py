@@ -1028,3 +1028,18 @@ def test_a_cron_that_fires_often_keeps_its_next_run_and_is_named_only_when_it_fi
     assert plan["items"] == []
     in_january = _one("weekPlan", models, int(dt.datetime(2026, 12, 29, 12, 0, tzinfo=UTC).timestamp() * 1000), 7)
     assert sorted(f["wf"] for f in in_january["frequent"]) == ["Half", "Jan", "Often"]                            # a week that does contain it
+
+
+def test_a_schedule_written_in_a_flow_mapping_on_the_on_line_is_read_and_one_nested_deeper_is_not():
+    cases = [("on: {schedule: [{cron: '0 2 * * *'}, {cron: \"0 3 * * *\", timezone: \"Asia/Tokyo\"}]}\n", ["0 2 * * *", "CRON_TZ=Asia/Tokyo 0 3 * * *"]),
+             ("on: {push: {branches: [main]}, schedule: [{cron: '0 4 * * *'}], workflow_dispatch: {}}\n", ["0 4 * * *"]),         # other keys, with brackets of their own, around it
+             ("\"on\": {\"schedule\": [{\"cron\": \"0 5 * * *\"}]}\n", ["0 5 * * *"]),
+             ("on: {push: {branches: [main]}}\n", []), ("on: [push, schedule]\n", []), ("on: push\n", []),
+             ("on: {workflow_call: {schedule: [{cron: '0 6 * * *'}]}}\n", []),                                               # a schedule inside another key is not the trigger
+             ("on: {schedule: [{cron: '0 7 * * *'}]} # {cron: '0 8 * * *'}\n", ["0 7 * * *"]),                                # a comment is not YAML
+             ("name: x\njobs:\n  a:\n    env: {schedule: [{cron: '0 9 * * *'}]}\n", []), ("on: {schedule: [{cron: '0 10 * * *'}\n", []),       # not closed: nothing guessed
+             ("on: {push: {branches: [\"a]\", 'b,c']}, schedule: [{cron: '0 11 * * *'}]}\n", ["0 11 * * *"]),                 # a bracket or a comma inside a quoted string is not structure
+             ("on: {push: {}} # {schedule: [{cron: '0 12 * * *'}]}\n", []),                                                  # the comment after the mapping is not YAML
+             ("on: {other: [{cron: '0 13 * * *'}]}\n", [])]                                                                  # a sequence of cron-like items under another key
+    assert _node([["extractCrons", [t]] for t, _ in cases]) == [expected for _, expected in cases]
+    assert _one("hasDispatch", "on: {push: {branches: [main]}, schedule: [{cron: '0 4 * * *'}], workflow_dispatch: {}}\n") is True

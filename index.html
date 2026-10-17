@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-1v/Mo9sHdqujPIRU0ZEQJHqUG8ZULxNVxd7zwO2xJTk='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-N9a4Wtsnz11ARIny0R1Wf9im15iPJEEfH7/MBPLhQqg='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -806,6 +806,39 @@ function yamlLines(text) {
   }
   return out;
 }
+// A flow mapping written on one line, `{push: {branches: [main]}, schedule: [{cron: "0 2 * * *"}]}`: the inside of the `[...]` that is the value of `key` at the top level of the
+// mapping (not of a mapping inside it), or null. Quotes are respected; brackets are counted.
+function flowSequenceOf(text, key) {
+  const t = String(text).trim();
+  if (t[0] !== "{") return null;
+  const open = new RegExp("^\\s*[\"']?" + key + "[\"']?\\s*:\\s*\\[");
+  let depth = 0, quote = "", fresh = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (fresh && depth === 1) {
+      const m = open.exec(t.slice(i));
+      if (m) return innerOf(t, i + m[0].length - 1);
+      fresh = false;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "{" || ch === "[") { depth++; if (depth === 1) fresh = true; }
+    else if (ch === "}" || ch === "]") depth--;
+    else if (ch === "," && depth === 1) fresh = true;
+  }
+  return null;
+}
+function innerOf(t, open) {                                                                          // what is between the bracket at `open` and its partner
+  let depth = 0, quote = "";
+  for (let i = open; i < t.length; i++) {
+    const ch = t[i];
+    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "[" || ch === "{") depth++;
+    else if (ch === "]" || ch === "}") { depth--; if (depth === 0) return t.slice(open + 1, i); }
+  }
+  return null;
+}
 function extractCrons(text) {
   const out = [];
   let indent = -1, item = null;
@@ -822,9 +855,14 @@ function extractCrons(text) {
     const c = /["']?cron["']?\s*:\s*(["'])(.*?)\1/.exec(inner), z = /["']?timezone["']?\s*:\s*(?:(["'])(.*?)\1|([^,\s}]+))/.exec(inner);
     if (c) keep(c[2].trim(), z ? (z[2] !== undefined ? z[2] : z[3]).trim() : undefined);
   };
-  for (const { line, lead, onDirect } of yamlLines(text)) {
+  for (const { line, lead, onTop, onDirect } of yamlLines(text)) {
     if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
     if (indent < 0) {
+      if (onTop) {                                                                                     // `on: {schedule: [...]}` on one line
+        const inner = flowSequenceOf(line.replace(/^(?:on|"on"|'on')\s*:/, "").replace(/\s+#.*$/, ""), "schedule");
+        if (inner !== null) for (const g of inner.matchAll(/\{([^}]*)\}/g)) flowItem(g[1]);
+        continue;
+      }
       if (!onDirect) continue;                                                                         // a `schedule` key anywhere else (a matrix, an input) is not the trigger
       const flow = /^\s*["']?schedule["']?\s*:\s*\[(.*)\]\s*(#.*)?$/.exec(line);
       if (flow) { for (const g of flow[1].matchAll(/\{([^}]*)\}/g)) flowItem(g[1]); continue; }
