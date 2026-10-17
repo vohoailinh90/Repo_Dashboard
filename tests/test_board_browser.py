@@ -1383,9 +1383,21 @@ def full_pages(repo=REPO):
     return routes
 
 
+def many_jobs(repo=REPO):
+    """The run in progress and the finished nightly each have 250 jobs: the first page of a hundred is followed by two more."""
+    base = f"/repos/{repo}"
+    routes = app_routes(repo)
+    live = [{"id": 1000 + i, "name": f"j{i}", "status": "in_progress", "started_at": iso(100), "steps": []} for i in range(100)]
+    done = [{"id": 5000 + i, "name": f"d{i}", "status": "completed", "conclusion": "success", "started_at": iso(900), "completed_at": iso(800), "steps": []} for i in range(100)]
+    routes[f"{base}/actions/runs/101/jobs"] = (200, {"total_count": 250, "jobs": live})
+    routes[f"{base}/actions/runs/90/jobs"] = (200, {"total_count": 250, "jobs": done})
+    return routes
+
+
 STALE_STEPS = [("info", app_routes, ""), ("a file", app_routes, "/contents/.github/workflows/ci.yml"), ("a history", app_routes, "/actions/workflows/1/runs"),
                ("the second batch of files", ten_workflows, "/contents/.github/workflows/w11.yml"), ("the second batch of histories", ten_workflows, "/actions/workflows/11/runs"),
-               ("the first page of pull requests", full_pages, "/pulls"), ("the first page of workflows", full_pages, "/actions/workflows")]
+               ("the first page of pull requests", full_pages, "/pulls"), ("the first page of workflows", full_pages, "/actions/workflows"),
+               ("the first page of jobs", many_jobs, "/actions/runs/101/jobs")]
 
 
 @pytest.mark.parametrize("step,routes,suffix", STALE_STEPS, ids=[s[0] for s in STALE_STEPS])
@@ -1524,6 +1536,108 @@ def test_reads_queued_under_a_replaced_token_are_left_to_the_new_refresh(browser
     quiet(page)
     asked = sorted(r["clean"] for r in page.gh.requests[before:] if r["clean"] in {f"/repos/{n}" for n in names})
     assert asked == sorted(f"/repos/{n}" for n in names)                                     # each repository once, by the new refresh; the three that were waiting did not start under the old token as well
+    context.close()
+
+
+def hold_first(context, pattern, take):
+    """Keep back the answer of the first request that matches `pattern` (a regular expression on the whole URL) and let every other one through."""
+    def hold(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        if take["route"] is None and take.get("armed", True):
+            take["route"] = route
+            return None
+        return route.fallback()
+
+    context.route(re.compile(pattern), hold)
+
+
+def release(page, take):
+    url = take["route"].request.url
+    status, body = page.gh.routes[url.split("api.github.com")[1].split("?")[0]]
+    take["route"].fulfill(status=status, headers=CORS, content_type="application/json", body=body if isinstance(body, str) else json.dumps(body))
+
+
+def test_the_pages_of_the_jobs_of_a_repository_unlinked_meanwhile_are_not_asked_for(browser):
+    context, page = new_page(browser)
+    page.gh.routes = many_jobs()
+    take = {"route": None}
+    hold_first(context, rf"https://api\.github\.com/repos/{REPO}/actions/runs/101/jobs", take)
+    page.goto(PAGE_URL)
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None
+    open_tab(page, "settings")
+    page.click(f'[data-remove="{REPO}"]')                                                    # unlinked while the first page of the jobs of the run in progress is on its way
+    before = quiet(page)
+    release(page, take)
+    assert quiet(page) == before                                                             # the two pages after it are not asked for
+    context.close()
+
+
+def test_the_pages_of_the_jobs_of_a_row_opened_under_a_replaced_token_are_not_asked_for(browser):
+    context, page = new_page(browser)
+    page.gh.routes = many_jobs()
+    page.goto(PAGE_URL)
+    loaded(page)
+    quiet(page)
+    take = {"route": None}
+    hold_first(context, rf"https://api\.github\.com/repos/{REPO}/actions/runs/90/jobs", take)
+    repos(page)
+    page.locator("details.wf", has_text="Nightly").locator(":scope > summary").click()       # the steps of a finished run are asked for when its row is opened
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)                                                               # the token is replaced meanwhile
+    page.press("#token", "Tab")
+    page.wait_for_timeout(300)
+    before = quiet(page)
+    release(page, take)
+    assert quiet(page) == before
+    context.close()
+
+
+def test_a_repository_unlinked_and_linked_again_at_once_is_not_read_by_the_old_look_as_well(browser):
+    names = [f"demo/c{i}" for i in range(3)]
+    histories = lambda page, name: [r for r in page.gh.requests if r["clean"].startswith(f"/repos/{name}/actions/workflows/") and r["clean"].endswith("/runs")]    # noqa: E731
+    baseline_context, baseline = new_page(browser, repos=(names[0],))                          # how many histories one complete look at it asks for
+    baseline.gh.routes.update(app_routes(names[0]))
+    baseline.goto(PAGE_URL)
+    wait(baseline, "(document.querySelector('#repo-grid .repo') || document.body).textContent.includes('PR mở') || document.querySelector('#home-runs .pipe') !== null")
+    quiet(baseline)
+    one_look = len(histories(baseline, names[0]))
+    baseline_context.close()
+    assert one_look > 0
+    context, page = new_page(browser, repos=tuple(names))
+    for name in names:
+        page.gh.routes.update(app_routes(name))
+    held = []
+
+    def hold(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        if len(held) < 3:
+            held.append((route, request.url))                                                # the three slots are taken by the first step of three looks
+            return None
+        return route.fallback()
+
+    context.route(re.compile(r"https://api\.github\.com/repos/demo/c\d$"), hold)
+    page.goto(PAGE_URL)
+    deadline = time.monotonic() + 6
+    while len(held) < 3 and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert len(held) == 3
+    open_tab(page, "settings")
+    page.click(f'[data-remove="{names[0]}"]')
+    page.fill("#add-repo", names[0])                                                         # unlinked and linked again before its new look can start (every slot is taken)
+    page.click("#add")
+    for route, url in held:
+        route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(page.gh.routes[f"/repos/{url.split('/repos/')[1]}"][1]))
+    quiet(page)
+    assert len(histories(page, names[0])) == one_look                                        # only the new look asked for them; the old one stopped after its first step
     context.close()
 
 

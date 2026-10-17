@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-uGbvKX0NW9R0VoTCVdAqyVsLWpP7ndo4oWoYbQp8gE8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KRAq+9v8/nT9zDvjbISl7R0ASKFLEKlmnaUgzKWkq6Q='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1588,10 +1588,10 @@ async function loadRepo(repo, gone) {
   const shown = active.slice(0, 4), jobs = {}, jobsOmitted = {};
   if (stale()) return abandoned;
   await Promise.all(shown.map(async (a) => {
-    const got = await readJobs(base + "/actions/runs/" + a.run.id + "/jobs");
+    const got = await readJobs(base + "/actions/runs/" + a.run.id + "/jobs", stale);
     if (got && !got.failed) { jobs[a.run.id] = got.jobs; if (got.omitted) jobsOmitted[a.run.id] = got.omitted; return; }
     // A read that failed, or lost a page, is not the model's for good: it goes where an on-demand read goes, to be forgotten after half a minute and asked for again.
-    if (gen === state.gen) state.jobsCache.set(jobKey(repo, a.run), { at: Date.now(), active: true, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0, incomplete: true });
+    if (!stale()) state.jobsCache.set(jobKey(repo, a.run), { at: Date.now(), active: true, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0, incomplete: true });
   }));
   return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, jobsOmitted, pulls, pullsRead, pullsMore, workflowsRead, agentFiles };
 }
@@ -1600,15 +1600,17 @@ async function loadJobs(model, run) {
   const k = jobKey(model.repo, run);
   if (jobsOf(model, run) !== undefined || state.loadingJobs.has(k) || state.demo) return;
   state.loadingJobs.add(k);
-  const gen = state.gen, got = await readJobs("/repos/" + model.repo + "/actions/runs/" + run.id + "/jobs");
+  const gen = state.gen, stale = () => gen !== state.gen || !state.repos.some((r) => sameRepo(r, model.repo));      // the token was replaced, or the repository unlinked
+  const got = await readJobs("/repos/" + model.repo + "/actions/runs/" + run.id + "/jobs", stale);
   state.loadingJobs.delete(k);
-  if (gen !== state.gen) return;
+  if (stale()) return;
   state.jobsCache.set(k, { at: Date.now(), active: runState(run).active, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0, incomplete: !!(got && got.failed) });
   render();
 }
-async function readJobs(path) {                                          // path: ".../actions/runs/{id}/jobs"; null when the first page cannot be read
+async function readJobs(path, stale) {                                   // path: ".../actions/runs/{id}/jobs"; null when the first page cannot be read, or nobody wants the rest of it any more
   const first = await call(path + "?per_page=" + JOB_PAGE);
   if (first.status !== 200 || !first.data || !Array.isArray(first.data.jobs)) return null;
+  if (stale && stale()) return null;                                     // the token was replaced, or the repository unlinked, while the first page was on its way: the other pages are not asked for
   const rest = await Promise.all(morePages(first.data).map((n) => call(path + "?per_page=" + JOB_PAGE + "&page=" + n)));
   return gatherJobs(first.data, rest.map((r) => (r.status === 200 && r.data ? r.data.jobs : null)));
 }
@@ -2098,6 +2100,7 @@ function addRepos(names) {
 }
 function removeRepo(repo) {
   state.repos = state.repos.filter((r) => !sameRepo(r, repo));
+  state.epoch.set(keyOf(repo), (state.epoch.get(keyOf(repo)) || 0) + 1);                          // a look in flight is the old one even if the same repository is linked again before its new look starts
   state.models.delete(keyOf(repo));
   saveStore(); render();
   say("link-msg", "Đã bỏ liên kết " + repo + ".", "ok");
