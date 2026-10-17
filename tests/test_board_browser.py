@@ -268,6 +268,7 @@ def test_a_card_lights_up_its_chain_and_dims_the_rest_and_a_second_click_lets_go
     card = ui.locator("button.node[data-id='r|demo/app|101']")
     card.click()
     assert ui.locator("button.node.focus").count() == 1 and ui.locator("button.node.chain").count() == 4 and ui.locator("button.node.dim").count() == 7
+    wait(ui, "document.querySelectorAll('#edges path.chain').length === 4")             # the lines are redrawn on the next animation frame, not in the click itself
     assert ui.locator("#edges path.chain").count() == 4 and ui.get_attribute("button.node.focus", "aria-pressed") == "true"
     assert "Mở lượt chạy #8 trên GitHub" in text(ui, "#board-detail") and ui.get_attribute("#board-detail a", "href") == "https://github.com/demo/app/actions/runs/101"
     ui.locator("button.node[data-id='p|demo/app|5']").click()                         # another card: the chain moves
@@ -340,6 +341,7 @@ def test_done_cards_can_be_shown_folded_or_hidden_and_the_board_can_be_grouped_b
     assert text(ui, "#f-count") == "9 / 12"
     ui.click("#grp-repo")
     wait(ui, "document.querySelectorAll('#wavegrid .wave').length === 1")
+    wait(ui, "document.querySelectorAll('#edges path').length === 0")                  # the lines are cleared on the next animation frame
     assert ui.inner_text("#wavegrid .wave > h3").replace("\n", " ").startswith("demo/app") and ui.locator("#edges path").count() == 0       # one column per repo, no lines
     ui.click("#grp-flow")
     wait(ui, "document.querySelectorAll('#edges path').length > 0")
