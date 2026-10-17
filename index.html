@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-nTxz6hquQXsRen8b9zcjbTnZyFh9J1cyjho6SbueWIs='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-IJAJArxylOiptqAnAO/sVodWgDlMygPNL1LThX4dIw8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -561,7 +561,7 @@ function normJob(j) {
            startedAt: j.started_at || null, completedAt: j.completed_at || null, steps: (Array.isArray(j.steps) ? j.steps : []).slice(0, 60).map(normStep) };
 }
 const JOB_PAGE = 100, MAX_JOB_PAGES = 5;
-const LIST_PAGE = 100, MAX_PULL_PAGES = 3, MAX_PICK_PAGES = 5, HISTORY_MAX = 24, FILES_MAX = 24;      // lists GitHub gives a hundred at a time: how far each is read
+const LIST_PAGE = 100, MAX_PULL_PAGES = 3, MAX_PICK_PAGES = 5, HISTORY_MAX = 24, FILES_MAX = 24, MAX_WF_PAGES = 5;      // lists GitHub gives a hundred at a time: how far each is read
 // A run lists its jobs a hundred to a page and says how many it has in all (total_count). The pages to ask for after the first, never more than MAX_JOB_PAGES in all.
 function morePages(first) {
   const total = first && Number.isInteger(first.total_count) ? first.total_count : 0, got = first && Array.isArray(first.jobs) ? first.jobs.length : 0;
@@ -1397,15 +1397,31 @@ async function readPages(path, max, stale) {
   }
   return { status: 200, data: items, more: true };
 }
+// The workflows of a repository, a hundred to a page, in the shape the single answer used to have (`{workflows: [...]}`), plus `more` when the list may go on past what was read
+// (the limit was reached, or a later page could not be read). A first page that fails is returned as it is.
+async function readWorkflowList(base) {
+  const first = await call(base + "/actions/workflows?per_page=" + LIST_PAGE);
+  if (first.status !== 200 || !first.data || !Array.isArray(first.data.workflows)) return first;
+  const all = first.data.workflows.slice();
+  let more = all.length >= LIST_PAGE;
+  for (let n = 2; more && n <= MAX_WF_PAGES; n++) {
+    const res = await call(base + "/actions/workflows?per_page=" + LIST_PAGE + "&page=" + n);
+    if (res.status !== 200 || !res.data || !Array.isArray(res.data.workflows)) break;
+    all.push(...res.data.workflows);
+    more = res.data.workflows.length >= LIST_PAGE;                                                    // a full page: there may be another
+  }
+  return { status: 200, data: { workflows: all }, more };
+}
 async function loadRepo(repo) {
   const base = "/repos/" + repo, warnings = [];
-  const [info, runsRes, wfsRes, pullsRes] = await Promise.all([call(base), call(base + "/actions/runs?per_page=40"), call(base + "/actions/workflows?per_page=100"), readPages(base + "/pulls?state=open", MAX_PULL_PAGES)]);
+  const [info, runsRes, wfsRes, pullsRes] = await Promise.all([call(base), call(base + "/actions/runs?per_page=40"), readWorkflowList(base), readPages(base + "/pulls?state=open", MAX_PULL_PAGES)]);
   if (info.status !== 200) return { repo, ok: false, error: explain(info.status, info.data) };
   let runList = [], wfList = [], pulls = [];
   if (runsRes.status === 200 && runsRes.data && Array.isArray(runsRes.data.workflow_runs)) runList = runsRes.data.workflow_runs.map(normRun).filter(Boolean);
   else warnings.push("Không đọc được các lượt chạy: " + explain(runsRes.status, runsRes.data));
   if (wfsRes.status === 200 && wfsRes.data && Array.isArray(wfsRes.data.workflows)) wfList = wfsRes.data.workflows.map(normWorkflow).filter(Boolean);
   else warnings.push("Không đọc được danh sách workflow: " + explain(wfsRes.status, wfsRes.data));
+  if (wfsRes.more) warnings.push("Repo có thể còn workflow nữa: chỉ đọc " + wfList.length + " workflow (giới hạn " + MAX_WF_PAGES * LIST_PAGE + ").");
   if (pullsRes.status === 200 && Array.isArray(pullsRes.data)) pulls = pullsRes.data.map(normPull).filter(Boolean);
   else warnings.push("Không đọc được PR: " + explain(pullsRes.status, pullsRes.data));
   const pullsMore = !!pullsRes.more;

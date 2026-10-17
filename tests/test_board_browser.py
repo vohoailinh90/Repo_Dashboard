@@ -868,6 +868,32 @@ def test_a_workflow_with_a_very_long_file_name_still_has_its_schedule_read(brows
     context.close()
 
 
+def test_the_workflow_list_is_read_page_by_page_up_to_five_pages_and_says_when_it_stops(browser):
+    for total, pages, shown, said, fail_page in ((250, [1, 2, 3], 250, None, None), (600, [1, 2, 3, 4, 5], 500, "chỉ đọc 500 workflow", None), (250, [1, 2, 3], 200, "chỉ đọc 200 workflow", 3)):
+        context, page = new_page(browser)
+        asked = []
+
+        def handle(route, request, total=total, asked=asked, fail_page=fail_page):
+            if request.method == "OPTIONS":
+                return route.fulfill(status=204, headers=PREFLIGHT)
+            found = re.search(r"[?&]page=(\d+)", request.url)
+            n = int(found.group(1)) if found else 1
+            asked.append(n)
+            if n == fail_page:
+                return route.fulfill(status=500, headers=CORS, content_type="application/json", body='{"message":"boom"}')
+            items = [{"id": 1000 + i, "name": f"wf-{i}", "path": f".github/workflows/w{i}.yml", "state": "active"} for i in range((n - 1) * 100, min(total, n * 100))]
+            route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps({"total_count": total, "workflows": items}))
+        context.route(re.compile(rf"https://api\.github\.com/repos/{REPO}/actions/workflows\?.*"), handle)
+        page.gh.routes[f"/repos/{REPO}/actions/runs"] = (200, {"workflow_runs": []})
+        page.goto(PAGE_URL)
+        repos(page)
+        wait(page, "document.querySelector('#repo-grid .repo .small.bad') !== null")
+        card = text(page, "#repo-grid .repo")
+        assert sorted(set(asked)) == pages and f"và {shown - 6} workflow khác" in card, (total, asked)
+        assert (said in card) if said else ("Repo có thể còn workflow nữa" not in card), (total, said)       # a list read to its end says nothing; one that was cut, or whose page failed, says so
+        context.close()
+
+
 def test_a_workflow_history_that_could_not_be_read_is_not_passed_off_as_never_having_run(browser):
     context, page = new_page(browser)
     page.gh.routes[f"/repos/{REPO}/actions/workflows/3/runs"] = (500, {"message": "boom"})            # the weekly scan lives only in its own history: GitHub fails it
