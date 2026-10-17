@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-4R2wvAIIKnC9+6cY5ZTVDSpeS94UQBW8vAYm0kbKgf4='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-7T1yl7GR6sQOMefB9i/8c2uJ2z2iPEzfzTKfflis1zg='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -832,7 +832,7 @@ function flowStart(code) {                                                      
   let quote = "";
   for (let i = 0; i < code.length; i++) {
     const ch = code[i];
-    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (quote) { if (quote === '"' && ch === "\\") i++; else if (ch === quote) quote = ""; continue; }
     if (ch === '"' || ch === "'") { quote = ch; continue; }
     if (ch === "[" || ch === "{") {
       const before = code.slice(0, i).replace(/(?:[&!]\S+\s*)+$/, "").trimEnd();
@@ -843,8 +843,9 @@ function flowStart(code) {                                                      
 }
 function flowDepth(code, depth) {                                                                  // the nesting depth after this text; brackets inside quotes are not counted
   let quote = "";
-  for (const ch of code) {
-    if (quote) { if (ch === quote) quote = ""; continue; }
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    if (quote) { if (quote === '"' && ch === "\\") i++; else if (ch === quote) quote = ""; continue; }
     if (ch === '"' || ch === "'") quote = ch;
     else if (ch === "[" || ch === "{") depth++;
     else if (ch === "]" || ch === "}") depth--;
@@ -890,7 +891,7 @@ function flowSequenceOf(text, key) {
   let depth = 0, quote = "", fresh = false;
   for (let i = 0; i < t.length; i++) {
     const ch = t[i];
-    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (quote) { if (quote === '"' && ch === "\\") i++; else if (ch === quote) quote = ""; continue; }
     if (fresh && depth === 1) {
       const m = open.exec(t.slice(i));
       if (m) return innerOf(t, i + m[0].length - 1);
@@ -907,7 +908,7 @@ function innerOf(t, open) {                                                     
   let depth = 0, quote = "";
   for (let i = open; i < t.length; i++) {
     const ch = t[i];
-    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (quote) { if (quote === '"' && ch === "\\") i++; else if (ch === quote) quote = ""; continue; }
     if (ch === '"' || ch === "'") quote = ch;
     else if (ch === "[" || ch === "{") depth++;
     else if (ch === "]" || ch === "}") { depth--; if (depth === 0) return t.slice(open + 1, i); }
@@ -974,7 +975,7 @@ function flowTop(text) {
   const end = () => { const s = cur.trim(); if (s) items.push(s); cur = ""; keyDone = false; };
   for (let i = 1; i < t.length && !closed; i++) {
     const ch = t[i];
-    if (quote) { if (ch === quote) quote = ""; else if (depth === 0 && !keyDone) cur += ch; continue; }
+    if (quote) { if (quote === '"' && ch === "\\") { if (depth === 0 && !keyDone) cur += ch + (t[i + 1] || ""); i++; } else if (ch === quote) quote = ""; else if (depth === 0 && !keyDone) cur += ch; continue; }
     if (ch === '"' || ch === "'") { quote = ch; continue; }
     if (ch === "{" || ch === "[") { depth++; continue; }
     if (ch === "}" || ch === "]") { if (depth === 0) { end(); closed = true; } else depth--; continue; }
@@ -1996,11 +1997,20 @@ function tick() {
 }
 
 // ---- doing things ----
-async function pool(items, size, fn) {
-  const queue = items.slice();
-  await Promise.all(Array.from({ length: Math.min(size, queue.length) }, async () => { while (queue.length) await fn(queue.shift()); }));
+// At most LOAD_SLOTS repositories are read at once, whoever asked for them (a refresh, a bulk add, a retry): one read fans out into several requests, and GitHub's secondary
+// limit counts them all. A read waits for a slot in the order it was asked for.
+const LOAD_SLOTS = 3, loads = { running: 0, waiting: [] };
+function inTurn(job) {
+  return new Promise((resolve, reject) => {
+    const start = () => {
+      loads.running++;
+      job().then(resolve, reject).finally(() => { loads.running--; const next = loads.waiting.shift(); if (next) next(); });
+    };
+    if (loads.running < LOAD_SLOTS) start(); else loads.waiting.push(start);
+  });
 }
-async function loadOne(repo) {
+const loadOne = (repo) => inTurn(() => loadNow(repo));
+async function loadNow(repo) {
   const k = keyOf(repo), mine = (state.epoch.get(k) || 0) + 1;
   state.epoch.set(k, mine);
   if (state.demo) return;                                                                         // queued behind others when the demo began: not started
@@ -2032,7 +2042,7 @@ async function refreshAll() {
   if (cooling()) { renderRate(); return; }                                                        // GitHub asked to wait: what is on the page stays, nothing is sent
   state.refreshing = true;
   $("refresh").disabled = true;
-  try { await pool(state.repos, 3, loadOne); } finally { state.refreshing = false; $("refresh").disabled = false; }
+  try { await Promise.all(state.repos.map(loadOne)); } finally { state.refreshing = false; $("refresh").disabled = false; }
   if (state.again) { state.again = false; await refreshAll(); }
 }
 // A new or forgotten token is a new reader: nothing fetched under the old one stays (cached answers, the models drawn from them, the picker's list,
@@ -2063,7 +2073,7 @@ function addRepos(names) {
     state.repos.push(name); added++;
     fresh.push(name);
   }
-  if (fresh.length) pool(fresh, 3, loadOne).catch(() => {});                                      // a bulk add is read three at a time like a refresh, not all at once
+  Promise.all(fresh.map(loadOne)).catch(() => {});                                                // a bulk add waits for the same slots a refresh uses, not all at once
   saveStore(); render();
   return added;
 }

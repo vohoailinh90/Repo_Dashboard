@@ -33,7 +33,7 @@ FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normIn
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop, closestMinutes, coolOff, stripComment")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop, closestMinutes, coolOff, stripComment, flowStart, flowDepth, flowSequenceOf, innerOf")
 
 
 def _node(cases: list) -> list:
@@ -1005,6 +1005,24 @@ def test_a_hash_inside_a_quoted_value_is_not_a_comment():
     assert _node([["hasDispatch", [t]] for t, _ in dispatch]) == [expected for _, expected in dispatch]
     crons = [("on: {schedule: [{cron: '0 5 * * *'}], push: {paths: [\"# x\"]}}\n", ["0 5 * * *"]), ("on: {push: {paths: [\"a # b\"]}, schedule: [{cron: '0 6 * * *'}]} # c\n", ["0 6 * * *"]),
              ("on:\n  schedule: [\n    {cron: '0 7 * * *'},\n  ]\n  push:\n    paths: [\n      \"# x\"\n    ]\n", ["0 7 * * *"])]
+    assert _node([["extractCrons", [t]] for t, _ in crons]) == [expected for _, expected in crons]
+
+
+def test_an_escaped_quote_does_not_end_a_double_quoted_scalar_in_a_flow_collection():
+    esc = chr(92) + chr(34)                                                                  # \" : a quote inside a double-quoted scalar
+    top = f'{{push: {{paths: ["a{esc} # b"]}}, workflow_dispatch: {{}}}}'
+    assert _node([["flowTop", [top]], ["flowTop", [f'["a{esc}b", c]']], ["flowTop", [f'{{"k{esc}": 1, "z": [")"]}}']]]) == [["push", "workflow_dispatch"], [f"a{esc}b", "c"], [f"k{esc}", "z"]]
+    assert _node([["flowDepth", [f'["a{esc}[", ', 0]], ["flowDepth", [f'{{a: "x{esc}}}"}}', 0]], ["flowDepth", ["['it''s [', ", 0]]]) == [1, 0, 1]
+    assert _node([["flowStart", [f'"k{esc}": [a]']], ["flowStart", [f'k: "a{esc}[" b']]]) == [7, -1]         # a quoted key that holds a quote, then the collection (the bracket is the eighth character)
+    schedule = "{cron: '0 5 * * *'}"
+    assert _node([["flowSequenceOf", [f'{{push: {{paths: ["a{esc}{{"]}}, schedule: [{schedule}]}}', "schedule"]],
+                  ["innerOf", [f'[{{name: "a{esc}]b"}}, {{cron: x}}]', 0]]]) == [schedule, f'{{name: "a{esc}]b"}}, {{cron: x}}']
+    flows = [(f"on: {{push: {{paths: [\"a{esc} # b\"]}}, workflow_dispatch: {{}}}}\n", True), (f'on: {{push: {{paths: ["a{esc}]}}"]}}, workflow_dispatch: {{}}}}\n', True),
+             (f'on: {{push: {{paths: ["a{esc}]}}"]}}}}\n', False), (f'on: [push, "a{esc}]", workflow_dispatch]\n', True),
+             (f'on:\n  push:\n    paths: ["a{esc}[",\n      "b"]\n  workflow_dispatch:\n', True), (f'on: ["push{esc}]",\n  workflow_dispatch ]\n', True)]
+    assert _node([["hasDispatch", [t]] for t, _ in flows]) == [expected for _, expected in flows]
+    crons = [(f"on: {{push: {{paths: [\"a{esc}{{\"]}}, schedule: [{schedule}]}}}}\n", ["0 5 * * *"]), (f"on: {{schedule: [{{name: \"a{esc}]b\", cron: '0 5 * * *'}}, {{cron: '0 6 * * *'}}]}}\n", ["0 5 * * *", "0 6 * * *"]),
+             (f"on:\n  push:\n    paths: [\"a{esc}[\",\n      \"b\"]\n  schedule: [\n    {{cron: '0 7 * * *'}}\n  ]\n", ["0 7 * * *"])]
     assert _node([["extractCrons", [t]] for t, _ in crons]) == [expected for _, expected in crons]
 
 
