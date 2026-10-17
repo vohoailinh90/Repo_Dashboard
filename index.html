@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+e443deXI9/6wdTuAXONmgddPaER63NbmbtN5rrtRoI='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-BufXZY+s92WV3bgLpQkVyVmgR9pAOshx+xPZh8C+fH8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -554,6 +554,7 @@ function normJob(j) {
            startedAt: j.started_at || null, completedAt: j.completed_at || null, steps: (Array.isArray(j.steps) ? j.steps : []).slice(0, 60).map(normStep) };
 }
 const JOB_PAGE = 100, MAX_JOB_PAGES = 5;
+const LIST_PAGE = 100, MAX_PULL_PAGES = 3, MAX_PICK_PAGES = 5, HISTORY_MAX = 24;      // lists GitHub gives a hundred at a time: how far each is read
 // A run lists its jobs a hundred to a page and says how many it has in all (total_count). The pages to ask for after the first, never more than MAX_JOB_PAGES in all.
 function morePages(first) {
   const total = first && Number.isInteger(first.total_count) ? first.total_count : 0, got = first && Array.isArray(first.jobs) ? first.jobs.length : 0;
@@ -1287,9 +1288,23 @@ function explain(status, data) {
   if (status === 404) return "Không thấy repo (private hoặc sai tên): cần token có quyền đọc repo này.";
   return "GitHub trả mã " + status + ".";
 }
+// A list GitHub gives a hundred at a time: read on while a page comes back full, up to `max` pages. `more` says the list may go on past what was read (the limit was
+// reached, or a later page could not be read). When the first page fails its answer is returned as it is, so that the caller can say why. `stale()` stops the reading
+// as soon as the answer would be dropped anyway (a new token, a newer request); the result is then null.
+async function readPages(path, max, stale) {
+  const items = [];
+  for (let n = 1; n <= max; n++) {
+    const res = await call(path + (path.includes("?") ? "&" : "?") + "per_page=" + LIST_PAGE + "&page=" + n);
+    if (stale && stale()) return null;
+    if (res.status !== 200 || !Array.isArray(res.data)) return n === 1 ? res : { status: 200, data: items, more: true };
+    items.push(...res.data);
+    if (res.data.length < LIST_PAGE) return { status: 200, data: items, more: false };
+  }
+  return { status: 200, data: items, more: true };
+}
 async function loadRepo(repo) {
   const base = "/repos/" + repo, warnings = [];
-  const [info, runsRes, wfsRes, pullsRes] = await Promise.all([call(base), call(base + "/actions/runs?per_page=40"), call(base + "/actions/workflows?per_page=100"), call(base + "/pulls?state=open&per_page=100")]);
+  const [info, runsRes, wfsRes, pullsRes] = await Promise.all([call(base), call(base + "/actions/runs?per_page=40"), call(base + "/actions/workflows?per_page=100"), readPages(base + "/pulls?state=open", MAX_PULL_PAGES)]);
   if (info.status !== 200) return { repo, ok: false, error: explain(info.status, info.data) };
   let runList = [], wfList = [], pulls = [];
   if (runsRes.status === 200 && runsRes.data && Array.isArray(runsRes.data.workflow_runs)) runList = runsRes.data.workflow_runs.map(normRun).filter(Boolean);
@@ -1298,6 +1313,8 @@ async function loadRepo(repo) {
   else warnings.push("Không đọc được danh sách workflow: " + explain(wfsRes.status, wfsRes.data));
   if (pullsRes.status === 200 && Array.isArray(pullsRes.data)) pulls = pullsRes.data.map(normPull).filter(Boolean);
   else warnings.push("Không đọc được PR: " + explain(pullsRes.status, pullsRes.data));
+  const pullsMore = !!pullsRes.more;
+  if (pullsMore) warnings.push("Repo có thể còn PR mở nữa: chỉ đọc " + pulls.length + " PR mới nhất (giới hạn " + MAX_PULL_PAGES * LIST_PAGE + ").");
   const workflows = wfList.map((w) => Object.assign({ crons: [], dispatch: false, runs: runList.filter((r) => r.wfId === w.id) }, w));
   await Promise.all(workflows.filter((w) => w.state === "active" && safeWorkflowPath(w.path)).slice(0, 10).map(async (w) => {
     const file = await cached("file:" + repo + ":" + w.path, 600000, () => call(base + "/contents/" + w.path.split("/").map(encodeURIComponent).join("/"), { raw: true }));
@@ -1307,13 +1324,17 @@ async function loadRepo(repo) {
   const agentFiles = agentsRes.status === 200 && Array.isArray(agentsRes.data)
     ? agentsRes.data.filter((f) => f && f.type === "file" && /\.md$/i.test(String(f.name))).map((f) => clip(String(f.name).replace(/\.md$/i, ""), 60)).slice(0, 30) : null;
   // The 40 newest runs of the whole repository are crowded by the busiest workflow: a scan that runs twice a week would show no history at all.
-  await Promise.all(workflows.filter((w) => w.state === "active" && w.runs.length < 3).slice(0, 8).map(async (w) => {
-    const res = await call(base + "/actions/workflows/" + w.id + "/runs?per_page=12");
-    if (res.status !== 200 || !res.data || !Array.isArray(res.data.workflow_runs)) return;
-    const have = new Set(w.runs.map((r) => r.id));
-    for (const r of res.data.workflow_runs.map(normRun).filter(Boolean)) if (!have.has(r.id)) w.runs.push(r);
-    w.runs.sort((a, b) => (isoMs(b.createdAt) || 0) - (isoMs(a.createdAt) || 0));
-  }));
+  const crowded = workflows.filter((w) => w.state === "active" && w.runs.length < 3), asked = crowded.slice(0, HISTORY_MAX);
+  for (let i = 0; i < asked.length; i += 8) {                                                              // eight at a time: a big repository must not be a burst of two dozen requests
+    await Promise.all(asked.slice(i, i + 8).map(async (w) => {
+      const res = await call(base + "/actions/workflows/" + w.id + "/runs?per_page=12");
+      if (res.status !== 200 || !res.data || !Array.isArray(res.data.workflow_runs)) return;
+      const have = new Set(w.runs.map((r) => r.id));
+      for (const r of res.data.workflow_runs.map(normRun).filter(Boolean)) if (!have.has(r.id)) w.runs.push(r);
+      w.runs.sort((a, b) => (isoMs(b.createdAt) || 0) - (isoMs(a.createdAt) || 0));
+    }));
+  }
+  if (crowded.length > asked.length) warnings.push((crowded.length - asked.length) + " workflow chưa đọc được lịch sử (giới hạn " + HISTORY_MAX + " yêu cầu): trạng thái của chúng có thể sai, một lỗi cũ có thể chưa hiện.");
   const active = [];
   for (const w of workflows) for (const run of w.runs) if (runState(run).active) active.push({ run, wf: { id: w.id, name: w.name, path: w.path } });
   active.sort((a, b) => (isoMs(b.run.createdAt) || 0) - (isoMs(a.run.createdAt) || 0));
@@ -1323,7 +1344,7 @@ async function loadRepo(repo) {
     jobs[a.run.id] = got ? got.jobs : null;
     if (got && got.omitted) jobsOmitted[a.run.id] = got.omitted;
   }));
-  return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, jobsOmitted, pulls, agentFiles };
+  return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, jobsOmitted, pulls, pullsMore, agentFiles };
 }
 // Steps of a finished run never change, so they are kept; the steps of a run still going are only trusted for 30 seconds.
 async function loadJobs(model, run) {
@@ -1587,7 +1608,7 @@ function repoCard(repo) {
         h("span", { class: "sp" }), remove),
       m.info.description ? h("p", { class: "desc", text: m.info.description }) : null,
       h("div", { class: "agentline" }, badge({ tone: health.tone, label: health.label, key: "" }), running ? badge({ tone: "info", label: running + " đang chạy", key: "running" }) : null),
-      h("div", { class: "stats" }, h("span", { text: "★ " + fmtN(m.info.stars) }), h("span", { text: "PR mở: " + m.pulls.length }), h("span", { text: "Issue mở: " + (m.pulls.length >= 100 ? "?" : issues) }),
+      h("div", { class: "stats" }, h("span", { text: "★ " + fmtN(m.info.stars) }), h("span", { text: "PR mở: " + m.pulls.length + (m.pullsMore ? "+" : "") }), h("span", { text: "Issue mở: " + (m.pullsMore ? "?" : issues) }),
         m.info.pushedAt ? h("span", { text: "push " + agoText(m.info.pushedAt) }) : null),
       (m.warnings || []).map((w) => h("p", { class: "small bad", text: w })),
       wfs.length ? h("ul", { class: "wfs" }, wfs.slice(0, 6).map((w) => workflowRow(m, w))) : h("p", { class: "small muted", text: "Repo chưa có workflow GitHub Actions." }),
@@ -1812,16 +1833,17 @@ async function onPickLoad() {
   if (!token() && !segmentOk(owner)) return say("link-msg", "Nhập tên tài khoản hoặc tổ chức (hoặc dán token để liệt kê repo của bạn).", "bad");
   say("link-msg", "Đang tải danh sách…");
   const gen = state.gen, seq = ++state.pickSeq;
-  const res = await call(token() ? "/user/repos?sort=pushed&per_page=100&affiliation=owner,collaborator,organization_member" : "/users/" + owner + "/repos?sort=pushed&per_page=100&type=owner");
-  if (gen !== state.gen || seq !== state.pickSeq) return;                            // the token changed, or a newer load was asked for, while this was on its way: the answer is dropped
+  const res = await readPages(token() ? "/user/repos?sort=pushed&affiliation=owner,collaborator,organization_member" : "/users/" + owner + "/repos?sort=pushed&type=owner", MAX_PICK_PAGES,
+                              () => gen !== state.gen || seq !== state.pickSeq);
+  if (!res || gen !== state.gen || seq !== state.pickSeq) return;                            // the token changed, or a newer load was asked for, while this was on its way: the answer is dropped
   if (res.status !== 200 || !Array.isArray(res.data)) return say("link-msg", explain(res.status, res.data), "bad");
   state.pickList = res.data.map((r) => ({ name: parseRepo(r && r.full_name), owner: String(r && r.owner && r.owner.login || ""), private: !!(r && r.private), pushedAt: r && r.pushed_at }))
-    .filter((r) => r.name && (!owner || r.owner.toLowerCase() === owner.toLowerCase())).slice(0, 100);
+    .filter((r) => r.name && (!owner || r.owner.toLowerCase() === owner.toLowerCase())).slice(0, MAX_PICK_PAGES * LIST_PAGE);
   $("pick-list").replaceChildren(...state.pickList.map((r, i) => {
     const linked = state.repos.some((x) => sameRepo(x, r.name));
     return h("li", null, h("label", null, h("input", { type: "checkbox", "data-i": i, checked: linked, disabled: linked }), r.name + (r.private ? " (private)" : "") + (r.pushedAt ? " · push " + agoText(r.pushedAt) : "")));
   }));
-  say("link-msg", state.pickList.length ? "Chọn repo rồi bấm “Thêm các repo đã chọn”." : "Không thấy repo nào.", state.pickList.length ? "" : "bad");
+  say("link-msg", state.pickList.length ? "Chọn repo rồi bấm “Thêm các repo đã chọn”." + (res.more ? " Danh sách dừng ở " + MAX_PICK_PAGES * LIST_PAGE + " repo đẩy gần nhất: repo khác thì gõ tên ở ô bên trên." : "") : "Không thấy repo nào.", state.pickList.length ? "" : "bad");
 }
 function onPickAdd() {
   const names = [...$("pick-list").querySelectorAll("input:checked:not(:disabled)")].map((n) => state.pickList[Number(n.dataset.i)]).filter(Boolean).map((r) => r.name);

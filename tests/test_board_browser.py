@@ -727,6 +727,82 @@ def test_the_jobs_of_a_finished_run_are_read_page_by_page_when_its_row_is_opened
     context.close()
 
 
+def paged_list(context, pattern, total, item):
+    """A list GitHub gives a hundred at a time, `total` long; `item(i)` makes the i-th entry. Returns the list of pages asked for."""
+    asked = []
+
+    def handle(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        found = re.search(r"[?&]page=(\d+)", request.url)
+        n = int(found.group(1)) if found else 1
+        asked.append(n)
+        route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps([item(i) for i in range((n - 1) * 100, min(total, n * 100))]))
+    context.route(pattern, handle)
+    return asked
+
+
+def a_pull(i):
+    return {"number": 100 + i, "title": f"PR {i}", "head": {"ref": f"feat/{i}", "repo": {"full_name": REPO}}, "user": {"login": "me", "type": "User"}, "draft": False, "updated_at": iso(60), "created_at": iso(60)}
+
+
+def test_a_repository_with_more_than_a_hundred_open_pull_requests_is_read_page_by_page(browser):
+    context, page = new_page(browser)
+    asked = paged_list(context, f"https://api.github.com/repos/{REPO}/pulls**", 250, a_pull)
+    page.goto(PAGE_URL)
+    loaded(page)
+    repos(page)
+    card = text(page, "#repo-grid .repo")
+    assert "PR mở: 250" in card and "PR mở: 250+" not in card and sorted(set(asked)) == [1, 2, 3] and "Issue mở: 0" in card         # all read: exact counts
+    context.close()
+
+
+def test_pull_requests_past_the_limit_are_not_counted_as_if_they_were_all_there(browser):
+    context, page = new_page(browser)
+    asked = paged_list(context, f"https://api.github.com/repos/{REPO}/pulls**", 400, a_pull)
+    page.goto(PAGE_URL)
+    loaded(page)
+    repos(page)
+    card = text(page, "#repo-grid .repo")
+    assert "PR mở: 300+" in card and "Issue mở: ?" in card and "chỉ đọc 300 PR mới nhất" in card and sorted(set(asked)) == [1, 2, 3]       # a fourth page is never asked for
+    context.close()
+
+
+def a_repo(i):
+    return {"full_name": f"bigowner/r{i}", "owner": {"login": "bigowner"}, "private": False, "pushed_at": iso(60)}
+
+
+def test_the_repository_picker_reads_further_pages_up_to_five(browser):
+    for total, shown, pages, said in ((230, 230, [1, 2, 3], False), (600, 500, [1, 2, 3, 4, 5], True)):
+        context, page = new_page(browser)
+        asked = paged_list(context, "https://api.github.com/users/bigowner/repos**", total, a_repo)
+        page.goto(PAGE_URL)
+        open_tab(page, "settings")
+        page.click("#pick")
+        page.fill("#pick-owner", "bigowner")
+        page.click("#pick-load")
+        wait(page, f"document.querySelectorAll('#pick-list li').length === {shown}")
+        assert sorted(set(asked)) == pages and ("500 repo đẩy gần nhất" in text(page, "#link-msg")) is said, (total, asked)
+        context.close()
+
+
+def test_workflows_crowded_out_of_the_repository_list_are_read_up_to_two_dozen_and_the_rest_are_owned_up_to(browser):
+    context, page = new_page(browser)
+    base = f"/repos/{REPO}"
+    page.gh.routes[f"{base}/actions/workflows"] = (200, {"workflows": [{"id": 200 + i, "name": f"wf-{i}", "path": f".github/workflows/wf-{i}.yml", "state": "active"} for i in range(26)]})
+    page.gh.routes[f"{base}/actions/runs"] = (200, {"workflow_runs": []})                      # the repository-wide list shows none of them: every workflow is crowded out
+    for i in range(26):
+        page.gh.routes[f"{base}/actions/workflows/{200 + i}/runs"] = (200, {"workflow_runs": [run_of(9000 + i, 200 + i, 1, "completed", "failure" if i == 19 else "success", 3600, head=REPO)]})
+    page.goto(PAGE_URL)
+    wait(page, "!document.getElementById('inbox-count').hidden")
+    open_tab(page, "inbox")
+    assert "wf-19 #1" in text(page, "#inbox-list")                                              # the nineteenth: past the old limit of eight, its failure is not hidden
+    assert len([p for p in page.gh.paths() if re.fullmatch(rf"{base}/actions/workflows/\d+/runs", p)]) == 24
+    repos(page)
+    assert "2 workflow chưa đọc được lịch sử" in text(page, "#repo-grid .repo")                 # the two beyond the limit are said to be unread, not shown as never having run
+    context.close()
+
+
 def test_a_run_with_far_more_jobs_is_read_up_to_five_pages_and_says_how_many_are_left_out(browser):
     context, page = new_page(browser)
     asked = paged_jobs(context, 700)
