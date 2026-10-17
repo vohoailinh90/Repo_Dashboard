@@ -302,7 +302,8 @@ def _py_field(text, lo, hi, names=(), base=0):
 
 def _py_occurrences(expr, start, end, limit, zone=None):
     """Every matching minute in (start, end), found by looking at each minute in turn (vixie cron: a day must match both day fields when either starts with `*`, either one when both are restricted).
-    With a zone the fields are read on that zone's wall clock; a local time that happens twice (the clock put back) counts once, and one that never happens (the clock put forward) is never found."""
+    With a zone the fields are read on that zone's wall clock; a local time that happens twice (the clock put back) counts once, and one that never happens (the clock put forward) runs
+    at the moment the clock jumps, once however many of the skipped minutes match."""
     f = expr.split()
     if len(f) != 5:
         return []
@@ -313,16 +314,28 @@ def _py_occurrences(expr, start, end, limit, zone=None):
     minute, hour, dom, month, dow = sets
     dow = {d % 7 for d in dow}                                                               # 7 is Sunday too
     dom_any, dow_any = f[2].startswith("*"), f[4].startswith("*")
+
+    def fits(w):
+        wd = (w.weekday() + 1) % 7
+        day_ok = (w.day in dom and wd in dow) if (dom_any or dow_any) else (w.day in dom or wd in dow)       # `*` or `*/2` in either: both sets; two restricted: either
+        return w.month in month and day_ok and w.hour in hour and w.minute in minute
+
     out, t = [], start + dt.timedelta(minutes=1)
     t = t.replace(second=0, microsecond=0)
     if t <= start:
         t += dt.timedelta(minutes=1)
     tz = _zone(zone) if zone else None
+    before = (t - dt.timedelta(minutes=1)).astimezone(tz).utcoffset() if tz else None
     while t < end and len(out) < limit:
         w = t.astimezone(tz) if tz else t
-        wd = (w.weekday() + 1) % 7
-        day_ok = (w.day in dom and wd in dow) if (dom_any or dow_any) else (w.day in dom or wd in dow)       # `*` or `*/2` in either: both sets; two restricted: either
-        if not w.fold and w.month in month and day_ok and w.hour in hour and w.minute in minute:             # fold: the second pass through a repeated hour
+        skipped = False
+        if tz:
+            now = w.utcoffset()
+            if now > before:                                                                                 # the clock was put forward at this minute: the wall minutes it jumped over
+                first = t.replace(tzinfo=None) + before
+                skipped = any(fits(first + dt.timedelta(minutes=i)) for i in range(int((now - before).total_seconds() // 60)))
+            before = now
+        if (not w.fold and fits(w)) or skipped:                                                              # fold: the second pass through a repeated hour
             out.append(int(t.timestamp() * 1000))
         t += dt.timedelta(minutes=1)
     return out
@@ -802,7 +815,8 @@ def test_a_job_that_is_still_queued_never_opens_a_stage_even_when_github_gave_it
 
 # ---- schedules that name a time zone ------------------------------------------------------------------------------------------------
 
-ZONED = [("America/New_York", ["30 5 * * 1-5", "30 2 * * *", "30 1 * * *", "0 0 * * *", "15 */6 * * *", "0 9 8 * *", "0 3 * * 0"]),
+ZONED = [("America/New_York", ["30 5 * * 1-5", "30 2 * * *", "30 1 * * *", "0 0 * * *", "15 */6 * * *", "0 9 8 * *", "0 3 * * 0",
+                               "15,45 2 * * *", "*/20 2 * * *", "0,30 2,3 * * *"]),             # the last three: several skipped minutes, or a skipped one and the first valid one, are one run
          ("Europe/London", ["30 1 * * *", "0 1 * * *", "30 0 * * *", "0 9 * * 1-5"]),
          ("Australia/Sydney", ["30 2 * * *", "0 3 * * *", "0 9 * * 1"]),
          ("Australia/Lord_Howe", ["15 2 * * *", "45 1 * * *", "0 9 * * *"]),                 # a clock change of half an hour
@@ -821,7 +835,7 @@ def test_a_cron_in_a_time_zone_matches_a_minute_by_minute_oracle_across_clock_ch
                 expected.append(_py_occurrences(expr, start, end, 400, zone))
     for case, js, py in zip(cases, _node(cases), expected):
         assert js == py, case
-    assert len(cases) == 46 and all(expected), "every comparison must have something to compare: an empty list on both sides would prove nothing"
+    assert len(cases) == 52 and all(expected), "every comparison must have something to compare: an empty list on both sides would prove nothing"
 
 
 def _utc(*ms):
@@ -832,13 +846,17 @@ def _ms(text):
     return int(dt.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
 
 
-def test_a_zone_moves_the_run_with_the_season_and_the_clock_change_hours_are_listed_once_or_not_at_all():
+def test_a_zone_moves_the_run_with_the_season_and_a_skipped_time_runs_when_the_clock_jumps_and_a_repeated_one_once():
     _zone("America/New_York")
     nine = "CRON_TZ=America/New_York 0 9 * * *"
     got = _node([["occurrences", [nine, _ms("2026-01-10T00:00Z"), _ms("2026-01-11T00:00Z"), 5]], ["occurrences", [nine, _ms("2026-07-10T00:00Z"), _ms("2026-07-11T00:00Z"), 5]]])
     assert [_utc(*g) for g in got] == [["2026-01-10T14:00Z"], ["2026-07-10T13:00Z"]]                  # 09:00 is 14:00 UTC in winter and 13:00 UTC in summer
     gap = _one("occurrences", "CRON_TZ=America/New_York 30 2 * * *", _ms("2026-03-07T00:00Z"), _ms("2026-03-11T00:00Z"), 10)
-    assert _utc(*gap) == ["2026-03-07T07:30Z", "2026-03-09T06:30Z", "2026-03-10T06:30Z"]              # the 8th has no 02:30: the clocks went from 02:00 to 03:00
+    assert _utc(*gap) == ["2026-03-07T07:30Z", "2026-03-08T07:00Z", "2026-03-09T06:30Z", "2026-03-10T06:30Z"]       # the 8th has no 02:30 (the clocks went from 02:00 to 03:00): it runs at 03:00
+    several = _one("occurrences", "CRON_TZ=America/New_York 0,30 2,3 * * *", _ms("2026-03-08T00:00Z"), _ms("2026-03-09T00:00Z"), 10)
+    assert _utc(*several) == ["2026-03-08T07:00Z", "2026-03-08T07:30Z"]                                # 02:00, 02:30 and 03:00 are one run at 03:00, then 03:30
+    half = _one("occurrences", "CRON_TZ=Australia/Lord_Howe 15 2 * * *", _ms("2026-10-03T00:00Z"), _ms("2026-10-07T00:00Z"), 10)
+    assert _utc(*half) == ["2026-10-03T15:30Z", "2026-10-04T15:15Z", "2026-10-05T15:15Z", "2026-10-06T15:15Z"]       # a jump of half an hour: 02:15 on the 4th runs at 02:30
     twice = _one("occurrences", "CRON_TZ=America/New_York 30 1 * * *", _ms("2026-10-31T12:00Z"), _ms("2026-11-02T12:00Z"), 10)
     assert _utc(*twice) == ["2026-11-01T05:30Z", "2026-11-02T06:30Z"]                                  # 01:30 happens twice on 1 November: once, the first
     got = _node([["occurrences", ["CRON_TZ=Asia/Kolkata 30 9 * * *", _ms("2026-10-16T00:00Z"), _ms("2026-10-17T00:00Z"), 5]],
@@ -847,6 +865,15 @@ def test_a_zone_moves_the_run_with_the_season_and_the_clock_change_hours_are_lis
     assert [_utc(*g) for g in got] == [["2026-10-16T04:00Z"], ["2026-06-10T22:30Z"], ["2026-01-10T22:00Z"]]       # a half-hour zone; a zone that is 10:30 east in winter and 11 in summer
     assert _one("nextOccurrence", "CRON_TZ=Asia/Tokyo 0 9 * * *", NOW) == _ms("2026-10-17T00:00Z")
     assert _one("occurrences", "CRON_TZ=Asia/Tokyo 0 9 * * *", _ms("2026-10-17T00:00Z"), _ms("2026-10-18T00:00Z"), 5) == []       # nothing at the very start: the window is open at both ends
+
+
+def test_a_whole_skipped_day_runs_once_when_the_clock_jumps_and_matches_the_oracle():
+    _zone("Pacific/Apia")                                                                              # 30 December 2011 never happened there: the clocks went from -10 to +14
+    start, end = dt.datetime(2011, 12, 28, tzinfo=UTC), dt.datetime(2012, 1, 3, tzinfo=UTC)
+    cases = [["occurrences", [f"CRON_TZ=Pacific/Apia {expr}", int(start.timestamp() * 1000), int(end.timestamp() * 1000), 50]] for expr in ("0 3 * * *", "0 3,15 30 12 *", "59 23 * * *")]
+    expected = [_py_occurrences(expr, start, end, 50, "Pacific/Apia") for expr in ("0 3 * * *", "0 3,15 30 12 *", "59 23 * * *")]
+    assert _node(cases) == expected and all(expected)
+    assert "2011-12-30T10:00Z" in _utc(*expected[0]) and _utc(*expected[1]) == ["2011-12-30T10:00Z"]         # the skipped day's 03:00 (and 15:00) is one run at the jump
 
 
 def test_a_zone_the_browser_does_not_know_or_a_name_that_is_not_one_is_not_a_schedule():

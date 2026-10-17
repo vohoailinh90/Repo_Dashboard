@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-mB6uKCkh0PvXj2PSymgsDhmf/MRF4zJDEfa8i+Mlsns='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-qHZaiM+IrnVFI+15+Aozu5YtX5S4xALGbBWikiGtTY8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -698,12 +698,17 @@ function zoneOffset(ms, zone) {                                                 
   for (const x of zoneFormat(zone).formatToParts(new Date(ms))) if (x.type !== "literal") p[x.type] = Number(x.value);
   return Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second) - Math.floor(ms / 1000) * 1000;
 }
-// The instant at which the wall clock of the zone reads `local` (given as if it were UTC): none when that time does not exist that day (the hour a clock change skips),
-// the earlier one when it happens twice (the hour a clock change repeats). How GitHub itself treats those two hours is not documented in what was read: the page lists
-// a schedule as wall-clock times, once each.
+// The instant at which the wall clock of the zone reads `local` (given as if it were UTC): the earlier one when it happens twice (the hour a clock change repeats), and
+// when it does not exist that day (the hour a clock change skips) the moment the clock jumps, which is the first valid time after it: 02:30 on the day the clocks go from
+// 02:00 to 03:00 runs at 03:00. That is what the review's reading of GitHub's page says ("advance to the next valid time"); the page itself could not be opened here.
 function zonedToUtc(local, zone) {
-  const offsets = [...new Set([zoneOffset(local - 86400000, zone), zoneOffset(local + 86400000, zone)])].filter((o) => zoneOffset(local - o, zone) === o);
-  return offsets.length ? Math.min(...offsets.map((o) => local - o)) : null;
+  const before = zoneOffset(local - 86400000, zone), after = zoneOffset(local + 86400000, zone);
+  const offsets = [...new Set([before, after])].filter((o) => zoneOffset(local - o, zone) === o);
+  if (offsets.length) return Math.min(...offsets.map((o) => local - o));
+  if (after <= before) return null;                                                                  // not a clock put forward: nothing is guessed
+  let lo = local - after, hi = local - before;                                                     // the zone is on `before` at lo and on `after` at hi: the jump is between them
+  while (hi - lo > 1000) { const mid = lo + Math.floor((hi - lo) / 2000) * 1000; if (zoneOffset(mid, zone) === after) hi = mid; else lo = mid; }
+  return hi;
 }
 function parseField(text, min, max, names, nameBase) {
   const out = new Set();
@@ -763,7 +768,7 @@ function occurrences(expr, fromMs, untilMs, limit) {
     for (const h of c.hour) {
       for (const mi of c.minute) {
         const local = day + h * 3600000 + mi * 60000, t = zone ? zonedToUtc(local, zone) : local;
-        if (t !== null && t > fromMs && t < untilMs) { out.push(t); if (out.length >= limit) return out; }
+        if (t !== null && t > fromMs && t < untilMs && out[out.length - 1] !== t) { out.push(t); if (out.length >= limit) return out; }      // times a clock change skipped all run at the jump: once
       }
     }
   }
