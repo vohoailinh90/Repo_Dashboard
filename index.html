@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-5DLU0fG5uRyRFG2R0amHpgz5Q4/pecK14+w9d0xpSzs='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-r2WiGnGRcfXOVM6m67c7W2xh1KOPC0qRO997/4WD2yM='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1609,7 +1609,7 @@ async function loadJobs(model, run) {
   const stale = () => gen !== state.gen || (state.unlinks.get(rk) || 0) !== links || !state.repos.some((r) => sameRepo(r, model.repo));      // the token was replaced, or the repository unlinked (and perhaps linked again)
   const got = await readJobs("/repos/" + model.repo + "/actions/runs/" + run.id + "/jobs", stale);
   state.loadingJobs.delete(k);
-  if (stale()) return;
+  if (stale()) { render(); return; }                                                                    // not wanted any more, but a row of the new link may have been waiting on this marker: it asks again
   state.jobsCache.set(k, { at: Date.now(), active: runState(run).active, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0, incomplete: !!(got && got.failed) });
   render();
 }

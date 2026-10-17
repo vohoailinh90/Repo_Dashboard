@@ -1701,6 +1701,46 @@ def test_the_pages_of_the_jobs_of_a_row_read_across_an_unlink_and_a_link_are_not
     context.close()
 
 
+def test_the_first_look_at_a_repository_that_a_wait_cut_short_says_what_it_could_not_read(browser):
+    context, page = new_page(browser)
+    page.gh.routes[f"/repos/{REPO}/pulls"] = (403, SECONDARY)                                # the wait begins with the answer to one of the first four requests
+    page.gh.extra = {"retry-after": "300"}
+    page.goto(PAGE_URL)
+    open_tab(page, "repos")
+    wait(page, "(document.querySelector('#repo-grid .repo') || {textContent: ''}).textContent.includes('Không đọc được')")
+    card = text(page, "#repo-grid .repo")
+    assert "Không đọc được PR" in card                                                       # the list that was refused
+    assert "chưa đọc được file" in card                                                      # and the files of the workflows, which were never asked for
+    context.close()
+
+
+def test_a_row_waiting_for_its_steps_is_not_left_waiting_by_the_read_of_an_earlier_link(browser):
+    context, page = new_page(browser)
+    page.goto(PAGE_URL)
+    loaded(page)
+    quiet(page)
+    take = {"route": None}
+    hold_first(context, rf"https://api\.github\.com/repos/{REPO}/actions/runs/90/jobs", take)
+    repos(page)
+    page.locator("details.wf", has_text="Nightly").locator(":scope > summary").click()
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None
+    open_tab(page, "settings")
+    page.locator(f'[data-remove="{REPO}"]:visible').click()                                  # unlinked and linked again while the steps are on their way
+    page.fill("#add-repo", REPO)
+    page.click("#add")
+    repos(page)
+    wait(page, "[...document.querySelectorAll('#repo-grid .repo')].some((e) => e.textContent.includes('PR mở'))")
+    row = page.locator("details.wf", has_text="Nightly")
+    if row.get_attribute("open") is None:
+        row.locator(":scope > summary").click()                                              # the new link's row is open and wants its steps; the marker of the old read says they are being read
+    release(page, take)                                                                      # the old read ends, and its result is not the new row's
+    wait(page, "document.querySelector('#repo-grid .repo') && document.querySelector('#repo-grid .repo').textContent.includes('Run e2e')")
+    context.close()
+
+
 def test_a_repository_unlinked_and_linked_again_at_once_is_not_read_by_the_old_look_as_well(browser):
     names = [f"demo/c{i}" for i in range(3)]
     histories = lambda page, name: [r for r in page.gh.requests if r["clean"].startswith(f"/repos/{name}/actions/workflows/") and r["clean"].endswith("/runs")]    # noqa: E731
