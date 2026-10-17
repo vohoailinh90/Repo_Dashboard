@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    # The logic tests run under Node; the browser tests skip themselves when Playwright is not installed (see the next job).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -r requirements-dev.txt
+      - name: CSP hashes in step
+        run: python scripts/sync_csp.py --check
+      - name: Tests (logic and static checks)
+        run: pytest -q
+
+  browser:
+    # The same page in a real browser, with api.github.com answered by the test: nothing here reaches GitHub.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          pip install -r requirements-dev.txt playwright
+          playwright install --with-deps chromium
+      - name: Browser tests
+        run: pytest -q tests/test_board_browser.py
