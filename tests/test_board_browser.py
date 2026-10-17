@@ -1437,6 +1437,96 @@ def test_a_look_that_belongs_to_a_replaced_token_sends_nothing_more(browser, ste
     context.close()
 
 
+def test_a_repository_unlinked_while_its_look_is_in_flight_sends_nothing_more(browser):
+    context, page = new_page(browser)
+    take = {"route": None}
+
+    def hold(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        if take["route"] is None:
+            take["route"] = route                                                            # the first answer of the look is kept back
+            return None
+        return route.fallback()
+
+    context.route(f"https://api.github.com/repos/{REPO}", hold)
+    page.goto(PAGE_URL)
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None
+    open_tab(page, "settings")
+    page.click(f'[data-remove="{REPO}"]')                                                    # the repository is unlinked in the middle of its first step
+    before = quiet(page)
+    take["route"].fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(page.gh.routes[f"/repos/{REPO}"][1]))
+    assert quiet(page) == before                                                             # and the look stops there: no file, agent, history or job is asked for
+    context.close()
+
+
+def test_a_look_that_a_newer_look_of_the_same_repository_took_over_from_sends_nothing_more(browser):
+    context, page = new_page(browser)
+    take = {"route": None}
+
+    def hold(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        if take["route"] is None:
+            take["route"] = route                                                            # the first answer of the first look is kept back
+            return None
+        return route.fallback()
+
+    context.route(f"https://api.github.com/repos/{REPO}", hold)
+    page.goto(PAGE_URL)
+    deadline = time.monotonic() + 6
+    while take["route"] is None and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert take["route"] is not None
+    open_tab(page, "settings")
+    page.click(f'[data-remove="{REPO}"]')
+    page.fill("#add-repo", REPO)                                                             # the same repository is linked again: its new look is the one that counts
+    page.click("#add")
+    open_tab(page, "home")
+    loaded(page)
+    before = quiet(page)
+    take["route"].fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(page.gh.routes[f"/repos/{REPO}"][1]))
+    assert quiet(page) == before                                                             # the old look is still held, and still in its first step: it stops there
+    context.close()
+
+
+def test_reads_queued_under_a_replaced_token_are_left_to_the_new_refresh(browser):
+    names = [f"demo/c{i}" for i in range(6)]
+    context, page = new_page(browser, repos=tuple(names))
+    for name in names:
+        page.gh.routes.update(app_routes(name))
+    held = []
+
+    def hold(route, request):
+        if request.method == "OPTIONS":
+            return route.fulfill(status=204, headers=PREFLIGHT)
+        if len(held) < 3:
+            held.append((route, request.url))                                                # the three reads that have a slot are kept back; three more wait for one
+            return None
+        return route.fallback()
+
+    context.route(re.compile(r"https://api\.github\.com/repos/demo/c\d$"), hold)
+    page.goto(PAGE_URL)
+    deadline = time.monotonic() + 6
+    while len(held) < 3 and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert len(held) == 3
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)                                                               # the token is replaced: the refresh it asks for is the one that reads everything
+    page.press("#token", "Tab")
+    page.wait_for_timeout(300)
+    before = len(page.gh.requests)
+    for route, url in held:
+        route.fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(page.gh.routes[f"/repos/{url.split('/repos/')[1]}"][1]))
+    quiet(page)
+    asked = sorted(r["clean"] for r in page.gh.requests[before:] if r["clean"] in {f"/repos/{n}" for n in names})
+    assert asked == sorted(f"/repos/{n}" for n in names)                                     # each repository once, by the new refresh; the three that were waiting did not start under the old token as well
+    context.close()
+
+
 def test_a_repository_whose_every_schedule_runs_often_does_not_say_there_is_no_schedule(browser):
     context, page = new_page(browser)
     page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/weekly.yml"] = (200, "on:\n  schedule:\n    - cron: '*/30 * * * *'\n")

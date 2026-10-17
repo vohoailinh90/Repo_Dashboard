@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-LnmR3MAhRD9a1sAR8GJDnLjzuaClTLENfFfe0nOutVI='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-uGbvKX0NW9R0VoTCVdAqyVsLWpP7ndo4oWoYbQp8gE8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1530,8 +1530,8 @@ async function readWorkflowList(base, stale) {
   }
   return { status: 200, data: { workflows: all }, more };
 }
-async function loadRepo(repo) {
-  const base = "/repos/" + repo, warnings = [], gen = state.gen, stale = () => gen !== state.gen;
+async function loadRepo(repo, gone) {
+  const base = "/repos/" + repo, warnings = [], gen = state.gen, stale = () => gen !== state.gen || !!(gone && gone());
   const abandoned = { repo, ok: false, error: "Lượt đọc này bắt đầu với token cũ." };                     // never shown: the token changed, so loadNow drops whatever this returns
   const [info, runsRes, wfsRes, pullsRes] = await Promise.all([call(base), call(base + "/actions/runs?per_page=40"), readWorkflowList(base, stale), readPages(base + "/pulls?state=open", MAX_PULL_PAGES, stale)]);
   if (stale()) return abandoned;                                                                           // the token was replaced while the first step was on its way: no follow-up request is sent with the new one
@@ -2025,7 +2025,8 @@ function inTurn(job) {
     if (loads.running < LOAD_SLOTS) start(); else loads.waiting.push(start);
   });
 }
-const loadOne = (repo) => inTurn(() => loadNow(repo));
+// A read waiting for a slot belongs to the token it was asked for under: when the token is replaced, the refresh that replaces it reads every repository, so a waiting read is dropped.
+const loadOne = (repo) => { const gen = state.gen; return inTurn(() => (gen === state.gen ? loadNow(repo) : Promise.resolve())); };
 async function loadNow(repo) {
   if (!state.repos.some((r) => sameRepo(r, repo))) return;                                        // unlinked while it waited for a slot: not one request is spent on it
   const k = keyOf(repo), mine = (state.epoch.get(k) || 0) + 1;
@@ -2040,8 +2041,9 @@ async function loadNow(repo) {
   }
   let model;
   const refused = state.refused;                                                                  // how many requests the page had refused by then: a look that lost some is partial
-  try { model = await loadRepo(repo); } catch (e) { model = { repo, ok: false, error: "Lỗi không rõ khi đọc repo." }; }
-  if (state.demo || state.epoch.get(k) !== mine || !state.repos.some((r) => sameRepo(r, repo))) return;
+  const gone = () => state.demo || state.epoch.get(k) !== mine || !state.repos.some((r) => sameRepo(r, repo));      // the demo began, a newer look took over, or the repository was unlinked
+  try { model = await loadRepo(repo, gone); } catch (e) { model = { repo, ok: false, error: "Lỗi không rõ khi đọc repo." }; }
+  if (gone()) return;
   const before = state.models.get(k);
   if (before && before.ok && (state.refused !== refused || (!model.ok && waiting()))) return;      // a look that lost requests to the wait, or an error that came from it: what was read in full before stays
   state.models.set(k, model);
