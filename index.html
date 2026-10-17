@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-4s3mwtR8JrwR50jPQ3N4t+8Vdy7KSGuJLAA6cWRs0nM='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-6c11lvKbAzuOf3zKSjCPsXvhtSW/YHS6oRvVs0lw9Fs='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1383,14 +1383,16 @@ function noteRate(headers) {
   if (Number.isFinite(remaining) && Number.isFinite(limit)) { state.rate = mergeRate(state.rate, { remaining, limit, resetMs: Number.isFinite(reset) ? reset * 1000 : null }); renderRate(); }
 }
 function cooling() { return state.cool.until > Date.now(); }                                      // GitHub asked to wait (a secondary rate limit): nothing is sent until then
+function quotaSpent() { const q = state.rate; return !!(q && q.remaining === 0 && q.resetMs && Date.now() < q.resetMs); }       // the hourly count is spent and its reset is still ahead: nothing is sent either
+function waiting() { return quotaSpent() || cooling(); }
 async function call(path, opts) {
   if (state.demo) return { status: 0, data: null };                                              // the demo contacts nobody: a load that was under way when it began asks no more
   const raw = !!(opts && opts.raw), sentAt = Date.now();
   const headers = { "Accept": raw ? "application/vnd.github.raw+json" : "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
   if (token()) headers.Authorization = "Bearer " + token();
-  const slot = (raw ? "raw:" : "") + path, known = state.etags.get(slot), gen = state.gen, quota = state.rate;
+  const slot = (raw ? "raw:" : "") + path, known = state.etags.get(slot), gen = state.gen;
   // Out of quota with the reset still ahead: asking again only earns the same refusal, and a long list would send hundreds of them.
-  if (quota && quota.remaining === 0 && quota.resetMs && Date.now() < quota.resetMs) return { status: 403, data: { message: "API rate limit exceeded (request not sent)" } };
+  if (quotaSpent()) return { status: 403, data: { message: "API rate limit exceeded (request not sent)" } };
   if (cooling()) return { status: 403, data: { message: "secondary rate limit: GitHub asked to wait (request not sent)" } };
   if (known) headers["If-None-Match"] = known.etag;
   let res;
@@ -1691,6 +1693,7 @@ function renderBoard(all) {
   const f = state.filter;
   fillSelect($("f-repo"), "Mọi repo", all.filter((m) => m.ok).map((m) => [m.repo, m.repo]), f.repo);
   fillSelect($("f-status"), "Mọi trạng thái", STATUSES.map((s) => [s, STATUS_WORD[s]]), f.status);
+  f.repo = $("f-repo").value; f.status = $("f-status").value;                                     // a choice whose option is gone (a repository removed or unreadable) is no longer a filter
   if ($("f-q").value !== f.q) $("f-q").value = f.q;
   const board = boardModel(all, Date.now()), view = filterBoard(board, f);
   state.boardEdges = view.edges;
@@ -1942,15 +1945,18 @@ async function loadOne(repo) {
   const k = keyOf(repo), mine = (state.epoch.get(k) || 0) + 1;
   state.epoch.set(k, mine);
   if (state.demo) return;                                                                         // queued behind others when the demo began: not started
-  if (cooling()) {                                                                                // GitHub asked to wait: what is on the page stays, and a repository not read yet says why
-    if (!state.models.has(k)) { state.models.set(k, { repo, ok: false, error: "GitHub yêu cầu chờ đến " + clockText(state.cool.until) + " (giới hạn thứ cấp): repo này chưa được đọc." }); render(); }
+  if (waiting()) {                                                                                // GitHub asked to wait, or the hourly count is spent: what is on the page stays, and a repository not read yet says why
+    if (!state.models.has(k)) {
+      const why = cooling() ? "GitHub yêu cầu chờ đến " + clockText(state.cool.until) + " (giới hạn thứ cấp): repo này chưa được đọc." : explain(403, { message: "API rate limit exceeded" });
+      state.models.set(k, { repo, ok: false, error: why }); render();
+    }
     return;
   }
   let model;
   try { model = await loadRepo(repo); } catch (e) { model = { repo, ok: false, error: "Lỗi không rõ khi đọc repo." }; }
   if (state.demo || state.epoch.get(k) !== mine || !state.repos.some((r) => sameRepo(r, repo))) return;
   const before = state.models.get(k);
-  if (!model.ok && cooling() && before && before.ok) return;                                      // an error that came from the wait: what was read before stays
+  if (!model.ok && waiting() && before && before.ok) return;                                      // an error that came from the wait: what was read before stays
   state.models.set(k, model);
   render();
 }

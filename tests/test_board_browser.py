@@ -1392,6 +1392,43 @@ def test_a_not_modified_answer_after_the_wait_restarts_the_backoff_like_any_good
     context.close()
 
 
+def test_repositories_that_were_read_keep_their_data_when_the_hourly_count_runs_out_in_the_middle_of_a_look(browser):
+    names = [f"demo/r{i}" for i in range(6)]                                                 # three are loaded at a time: three are still queued when the count runs out
+    context, page = new_page(browser, repos=names)
+    for name in names:
+        page.gh.routes.update(app_routes(name))
+    page.goto(PAGE_URL)
+    repos(page)
+    wait(page, "[...document.querySelectorAll('#repo-grid .repo')].filter((e) => e.textContent.includes('PR mở')).length === 6")
+    quiet(page)
+    page.gh.remaining = 0                                                                    # the answers of the next look say the count is spent (the reset is ahead)
+    open_tab(page, "settings")
+    page.click("#refresh")
+    quiet(page)
+    repos(page)
+    cards = page.locator("#repo-grid .repo")
+    assert cards.count() == 6 and all("PR mở" in cards.nth(i).inner_text() for i in range(6))     # every card still shows what was read, the queued ones included: no card was turned into an error
+    context.close()
+
+
+def test_a_repository_filter_whose_repository_is_gone_stops_filtering(browser):
+    context, page = new_page(browser, repos=(REPO, "demo/two"))
+    page.gh.routes.update(app_routes("demo/two"))
+    page.goto(PAGE_URL)
+    wait(page, "document.querySelectorAll('#home-runs .pipe').length === 2")
+    board(page)
+    wait(page, "document.querySelectorAll('#f-repo option').length === 3")
+    page.select_option("#f-repo", "demo/two")
+    wait(page, "document.getElementById('f-count').textContent.split(' / ')[0] !== document.getElementById('f-count').textContent.split(' / ')[1]")
+    open_tab(page, "settings")
+    page.click('[data-remove="demo/two"]')                                                   # the repository of the filter is unlinked
+    board(page)
+    wait(page, "document.querySelectorAll('#f-repo option').length === 2")
+    shown, total = (int(n) for n in text(page, "#f-count").split(" / "))
+    assert page.input_value("#f-repo") == "" and shown == total and total > 0                # the selector says "all" and the board shows everything that is left, not nothing
+    context.close()
+
+
 def test_a_new_token_ends_the_wait_after_a_secondary_rate_limit(browser):
     context, page = new_page(browser, interval=30)
     page.goto(PAGE_URL)
