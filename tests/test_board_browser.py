@@ -1324,14 +1324,22 @@ def test_repositories_that_were_read_keep_their_data_while_github_asks_to_wait(b
     context.close()
 
 
+def limit_with_one_request(page):
+    """A second secondary limit that comes from a single request (the steps of a finished run, asked for by opening its row), so that no other answer races it."""
+    page.gh.routes[f"/repos/{REPO}/actions/runs/90/jobs"] = (403, SECONDARY)
+    repos(page)
+    page.locator("details.wf", has_text="Nightly").locator(":scope > summary").click()
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+
+
 def test_a_success_that_was_in_flight_when_the_wait_began_does_not_restart_the_backoff(browser):
-    context, page = new_page(browser, interval=30)
+    context, page = new_page(browser)                                                       # manual refresh only: a timer tick would add answers of its own
     page.clock.install(time=dt.datetime.now(dt.timezone.utc))
     page.goto(PAGE_URL)
     open_tab(page, "settings")
     page.fill("#token", TOKEN)
     page.press("#token", "Tab")
-    wait(page, "document.getElementById('live-text').textContent === 'live'")
+    wait(page, "document.getElementById('connect-msg').className.includes('ok')")
     quiet(page)
     held = []
     context.route(lambda url: url.endswith(f"/repos/{REPO}/actions/runs?per_page=40"),
@@ -1347,13 +1355,40 @@ def test_a_success_that_was_in_flight_when_the_wait_began_does_not_restart_the_b
     held[0].fulfill(status=200, headers=CORS, content_type="application/json", body=json.dumps(good_runs))       # and now it is answered well
     page.wait_for_timeout(300)
     page.clock.run_for(61_000)                                                                # the minute is over
-    wait(page, "document.getElementById('live-text').textContent === 'live'")
+    wait(page, "document.getElementById('live-text').textContent !== 'tạm dừng'")
     held.clear()
-    page.click("#refresh")                                                                    # asked again after the wait, the limit comes back: now two minutes, not one
-    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    limit_with_one_request(page)                                                              # asked again after the wait, the limit comes back: now two minutes, not one
     page.clock.run_for(100_000)                                                               # past the minute, inside the two
     page.wait_for_timeout(300)
     assert text(page, "#live-text") == "tạm dừng"
+    context.close()
+
+
+def test_a_not_modified_answer_after_the_wait_restarts_the_backoff_like_any_good_answer(browser):
+    context, page = new_page(browser)                                                       # manual refresh only: a timer tick would add answers of its own
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    page.goto(PAGE_URL)
+    open_tab(page, "settings")
+    page.fill("#token", TOKEN)
+    page.press("#token", "Tab")
+    wait(page, "document.getElementById('connect-msg').className.includes('ok')")
+    quiet(page)
+    good = page.gh.routes[f"/repos/{REPO}/pulls"]
+    page.gh.routes[f"/repos/{REPO}/pulls"] = (403, SECONDARY)                                # no Retry-After: a minute
+    page.click("#refresh")
+    wait(page, "document.getElementById('live-text').textContent === 'tạm dừng'")
+    quiet(page)
+    page.clock.run_for(61_000)                                                               # the minute is over
+    wait(page, "document.getElementById('live-text').textContent !== 'tạm dừng'")
+    page.gh.routes[f"/repos/{REPO}/pulls"] = good
+    count = len(page.gh.requests)
+    page.click("#refresh")                                                                   # nothing changed: every question is asked "only if changed" and answered 304
+    quiet(page)
+    asked = page.gh.conditional(count)
+    assert page.gh.not_modified > 0 and asked and sum(asked) >= 6                            # (and the 304s are the good answers that count)
+    limit_with_one_request(page)                                                             # a new limit: a minute again, not two
+    page.clock.run_for(70_000)
+    wait(page, "document.getElementById('live-text').textContent !== 'tạm dừng'")
     context.close()
 
 

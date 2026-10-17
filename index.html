@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-297lUOHNGXa9KZ7uQG+X2HWTzHsy9ayR5aa8a/je8S8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-4s3mwtR8JrwR50jPQ3N4t+8Vdy7KSGuJLAA6cWRs0nM='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1398,7 +1398,8 @@ async function call(path, opts) {
   catch (e) { return { status: 0, data: null }; }
   state.calls++;
   if (gen === state.gen) noteRate(res.headers);
-  if (res.status === 304 && known) return { status: 200, data: known.data };
+  const good = () => { if (gen === state.gen && sentAt >= state.cool.until) state.cool.hits = 0; };      // answered well to a question asked after the wait: the next limit starts again from a minute (an answer to one asked before it proves nothing)
+  if (res.status === 304 && known) { good(); return { status: 200, data: known.data }; }                // "not modified" is a good answer too, and most of a quiet refresh
   let data = null;
   try { data = raw ? await res.text() : await res.json(); } catch (e) { data = null; }
   const etag = res.headers.get("etag");
@@ -1406,7 +1407,7 @@ async function call(path, opts) {
   const wait = coolOff(res.status, res.headers.get("retry-after"), res.headers.get("x-ratelimit-remaining"), data && data.message, state.cool.hits);
   if (gen === state.gen) {
     if (wait > 0) { state.cool.until = Math.max(state.cool.until, Date.now() + wait); state.cool.hits++; renderRate(); setTimeout(renderRate, Math.min(wait, 3600000) + 100); }
-    else if (res.status < 400 && sentAt >= state.cool.until) state.cool.hits = 0;                    // answered well to a question asked after the wait: the next limit starts again from a minute (an answer to one asked before it proves nothing)
+    else if (res.status < 400) good();
   }
   return { status: res.status, data };
 }
