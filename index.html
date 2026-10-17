@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-o6+SJ7eqQFMp6c5zVECFg2ZBT7L3AbHBCQOuM2ucxQo='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-8OfhR/PydwLHKpzlXGTBhEUOjndMd77YKwJWQkHTZ1Q='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1411,7 +1411,7 @@ function buildDemo(spec, nowMs) {
 // ---- the page ----
 const $ = (id) => document.getElementById(id);
 const state = { repos: [], models: new Map(), demo: false, saved: null, office: null, realOffice: null, rate: null, interval: 60, open: new Set(), jobsCache: new Map(),
-                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), unlinks: new Map(), loading: new Map(), refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 }, refused: 0,
+                loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), unlinks: new Map(), loading: new Map(), tokenEditing: false, refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 }, refused: 0,
                 view: "home", theme: "neon", mode: "auto", group: "flow", filter: { repo: "", status: "", q: "", rest: "collapse" }, focus: null, chain: null, boardEdges: [], rowOpen: new Map(), calls: 0 };
 const keyOf = (repo) => repo.toLowerCase();
 
@@ -2079,6 +2079,7 @@ function enterDemoData() {
 }
 async function refreshAll() {
   if (state.demo) { enterDemoData(); render(); return; }
+  if (state.tokenEditing) return;                                                                 // a token is being typed or pasted and nobody has confirmed it: nothing is sent with it (the timer and the tab coming back land here too)
   if (state.refreshing) { state.again = true; return; }
   if (cooling()) { renderRate(); return; }                                                        // GitHub asked to wait: what is on the page stays, nothing is sent
   state.refreshing = true;
@@ -2241,7 +2242,8 @@ function init() {
   $("office-file").addEventListener("change", onOfficeFile);
   $("refresh").addEventListener("click", () => { state.files.clear(); refreshAll(); });
   $("interval").addEventListener("change", () => { state.interval = Number($("interval").value); saveStore(); schedule(); renderLive(); });
-  $("token").addEventListener("change", () => { clearCaches(); render(); refreshAll(); say("connect-msg", token() ? "Đã nhận token (chỉ nằm trong bộ nhớ trang này). Đang tải lại…" : "", token() ? "ok" : ""); });
+  $("token").addEventListener("input", () => { state.tokenEditing = true; clearCaches(); render(); });             // the text is the new token from the first character: what was read under the old one goes at once, not when the field loses the focus
+  $("token").addEventListener("change", () => { state.tokenEditing = false; clearCaches(); render(); refreshAll(); say("connect-msg", token() ? "Đã nhận token (chỉ nằm trong bộ nhớ trang này). Đang tải lại…" : "", token() ? "ok" : ""); });
   $("forget").addEventListener("click", () => { $("token").value = ""; clearCaches(); render(); refreshAll(); say("connect-msg", "Đã quên token và xóa dữ liệu đã tải bằng token.", "ok"); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden && state.interval && token() && !state.demo && !lowOnQuota(state.rate, Date.now())) refreshAll(); });
   setInterval(tick, 1000);

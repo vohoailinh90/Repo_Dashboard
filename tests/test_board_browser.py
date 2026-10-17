@@ -1764,6 +1764,29 @@ def test_a_refresh_during_the_first_look_at_a_new_repository_joins_that_look(bro
     context.close()
 
 
+def test_a_token_that_is_being_typed_is_not_used_until_it_is_confirmed(browser):
+    context, page = new_page(browser, interval=30)
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    page.goto(PAGE_URL)
+    loaded(page)
+    quiet(page)
+    before = len(page.gh.requests)
+    open_tab(page, "settings")
+    page.eval_on_selector("#io", "(e) => { e.value = 'something fetched under the previous credentials'; }")      # (the box is emptied with everything else that was read under a token)
+    page.fill("#token", TOKEN)                                                               # pasted or typed; the field still has the focus, so nothing has confirmed it yet
+    assert page.eval_on_selector("#io", "(e) => e.value") == ""                              # what was read under the previous credentials is gone at once, not when the field loses the focus
+    page.clock.run_for(65_000)                                                               # the timer ticks twice
+    page.wait_for_timeout(400)
+    assert len(page.gh.requests) == before                                                   # nothing was sent with a token nobody has confirmed
+    page.press("#token", "Tab")                                                              # confirmed
+    deadline = time.monotonic() + 6
+    while len(page.gh.requests) == before and time.monotonic() < deadline:
+        page.wait_for_timeout(100)
+    assert len(page.gh.requests) > before
+    assert any(r["headers"].get("authorization") for r in page.gh.requests[before:])         # now it is used
+    context.close()
+
+
 def test_a_replaced_token_does_not_join_the_look_that_belongs_to_the_old_one(browser):
     context, page = new_page(browser, repos=())
     take = {"route": None}
