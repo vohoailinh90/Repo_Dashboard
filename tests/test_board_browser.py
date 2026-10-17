@@ -89,6 +89,7 @@ class Github:
         self.requests: list[dict] = []
         self.routes: dict = app_routes()
         self.remaining = 4990
+        self.reset = int(time.time()) + 3000                      # one window: GitHub gives every answer of it the same reset time
         self.not_modified = 0
 
     def handle(self, route, request):
@@ -97,7 +98,7 @@ class Github:
         path = request.url.split("https://api.github.com", 1)[1]
         clean = path.split("?", 1)[0]
         self.requests.append({"method": request.method, "path": path, "clean": clean, "headers": request.headers})
-        rate = {"x-ratelimit-remaining": str(self.remaining), "x-ratelimit-limit": "5000", "x-ratelimit-reset": str(int(time.time()) + 3000)}
+        rate = {"x-ratelimit-remaining": str(self.remaining), "x-ratelimit-limit": "5000", "x-ratelimit-reset": str(self.reset)}
         if clean not in self.routes:
             return route.fulfill(status=404, headers={**CORS, **rate}, content_type="application/json", body='{"message":"Not Found"}')
         status, body = self.routes[clean]
@@ -374,6 +375,46 @@ def test_a_row_for_a_finished_workflow_loads_its_steps_when_opened(ui):
     assert [p for p in ui.gh.paths() if p.endswith("/runs/90/jobs")] and "Run e2e" in row.inner_text()
     states = row.locator(".fbox").evaluate_all("els => els.map(e => e.className.split(' ').find(c => c.startsWith('st-')))")
     assert states == ["st-done", "st-failed", "st-failed"]                                                       # start, the failed job, the result
+
+
+def test_a_run_that_is_run_again_does_not_show_the_steps_of_its_earlier_attempt(browser):
+    context, page = new_page(browser)
+    page.goto(PAGE_URL)
+    loaded(page)
+    repos(page)
+    row = page.locator("details.wf", has_text="Nightly")
+    row.locator("summary").click()
+    wait(page, "document.querySelectorAll('details.wf[open] .rows li.st-failed').length === 1")           # attempt 1 failed in "Run e2e"
+    again = run_of(90, 2, 3, "completed", "success", 600, "schedule", head=REPO)
+    again["run_attempt"] = 2                                                                              # run again: the same run id, the next attempt
+    page.gh.routes[f"/repos/{REPO}/actions/workflows/2/runs"] = (200, {"workflow_runs": [again]})
+    page.gh.routes[f"/repos/{REPO}/actions/runs"][1]["workflow_runs"] = [r for r in page.gh.routes[f"/repos/{REPO}/actions/runs"][1]["workflow_runs"] if r["id"] != 90] + [again]
+    page.gh.routes[f"/repos/{REPO}/actions/runs/90/jobs"] = (200, {"jobs": [{"id": 31, "name": "nightly", "status": "completed", "conclusion": "success", "started_at": iso(700), "completed_at": iso(600),
+                                                                              "steps": [{"name": "Run e2e (second try)", "status": "completed", "conclusion": "success", "number": 1}]}]})
+    open_tab(page, "settings")
+    page.click("#refresh")
+    page.wait_for_timeout(600)
+    open_tab(page, "repos")
+    wait(page, "document.querySelector('details.wf[open]') !== null && document.querySelector('details.wf[open]').textContent.includes('Run e2e (second try)')")
+    assert row.locator(".rows li.st-failed").count() == 0                                                 # not the failed step of the attempt before
+    context.close()
+
+
+def test_a_late_answer_with_a_higher_quota_count_does_not_put_the_count_back_up(browser):
+    context, page = new_page(browser)
+    held = []
+    context.route(f"https://api.github.com/repos/{REPO}/actions/runs/101/jobs**", lambda route, request: route.fulfill(status=204, headers=PREFLIGHT) if request.method == "OPTIONS" else held.append(route))
+    page.goto(PAGE_URL)
+    deadline = time.monotonic() + 8
+    while not held and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert held                                                                             # the last request of the look is out; every other answer (4990 left) is in
+    page.wait_for_timeout(300)
+    body = page.gh.routes[f"/repos/{REPO}/actions/runs/101/jobs"][1]
+    held[0].fulfill(status=200, headers={**CORS, "x-ratelimit-remaining": "4999", "x-ratelimit-limit": "5000", "x-ratelimit-reset": str(page.gh.reset)}, content_type="application/json", body=json.dumps(body))
+    loaded(page)
+    assert "4990/5000" in re.sub(r"[.,\s]", "", page.text_content("#rate"))                                 # a count only goes down inside a window: 4999 was a late answer
+    context.close()
 
 
 def test_a_workflow_crowded_out_of_the_repository_list_still_shows_its_own_history(ui):
@@ -809,7 +850,7 @@ def test_auto_refresh_pauses_when_the_quota_runs_low_and_goes_on_when_it_recover
     page.clock.run_for(65_000)
     page.wait_for_timeout(400)
     assert len(page.gh.requests) == seen                                         # two timer ticks, nothing sent
-    page.gh.remaining = 4000
+    page.gh.remaining, page.gh.reset = 4000, page.gh.reset + 3600                # the window ended: a new count under a later reset time (inside a window the count only goes down)
     page.click("#refresh")                                                       # the person asks: this goes through and reads the new quota
     wait(page, "document.getElementById('rate').textContent.includes('4.000')")
     assert "tạm dừng" not in text(page, "#rate") and text(page, "#live-text") == "live"

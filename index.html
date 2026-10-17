@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-qcUwtkcqHoK6uZDIpNEqhljvbLfkel9XYNVhMmyE7DM='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-RoFEwt95ZLAW8xUPG2GMSsaK059SoQVu/U/x06PsxUQ='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -567,6 +567,8 @@ function gatherJobs(first, rest) {
   const total = Number.isInteger(first.total_count) ? first.total_count : 0;
   return { jobs, omitted: Math.max(0, total - jobs.length) };
 }
+// A run that is run again keeps its id and gets the next attempt; the jobs endpoint then lists the latest attempt, so what was read for the earlier one is another entry.
+function jobKey(repo, run) { return repo + "#" + run.id + "#" + (run.attempt > 1 ? run.attempt : 1); }
 function normPull(p) {
   if (!p || !Number.isInteger(p.number)) return null;
   return { number: p.number, title: clip(p.title, 140), draft: !!p.draft, user: clip(p.user && p.user.login, 60), userType: p.user && p.user.type === "Bot" ? "Bot" : "User",
@@ -822,6 +824,14 @@ function hasDispatch(text) { return String(text == null ? "" : text).split(/\r?\
 
 // ---- the quota: below this the page stops asking by itself ----
 // (a quota that has reset since it was last read is not low any more)
+// The answers of one refresh arrive in any order, and `remaining` only goes down inside a window: a late answer must not put the count back up, and a reading from a
+// window that has already ended must not replace the current one. With no reset time on either there is no window to compare: the newer reading is taken.
+function mergeRate(cur, next) {
+  if (!cur || !next || cur.resetMs === null || next.resetMs === null) return next || cur;
+  if (next.resetMs < cur.resetMs) return cur;
+  if (next.resetMs > cur.resetMs) return next;
+  return { remaining: Math.min(cur.remaining, next.remaining), limit: next.limit, resetMs: next.resetMs };
+}
 function lowOnQuota(rate, nowMs) {
   if (!rate || !(rate.limit > 0) || (rate.resetMs && nowMs >= rate.resetMs)) return false;
   return rate.remaining < Math.max(50, rate.limit * 0.05);
@@ -1236,7 +1246,7 @@ function saveStore() {
 // ---- GitHub (GET only) ----
 function noteRate(headers) {
   const remaining = parseInt(headers.get("x-ratelimit-remaining"), 10), limit = parseInt(headers.get("x-ratelimit-limit"), 10), reset = parseInt(headers.get("x-ratelimit-reset"), 10);
-  if (Number.isFinite(remaining) && Number.isFinite(limit)) { state.rate = { remaining, limit, resetMs: Number.isFinite(reset) ? reset * 1000 : null }; renderRate(); }
+  if (Number.isFinite(remaining) && Number.isFinite(limit)) { state.rate = mergeRate(state.rate, { remaining, limit, resetMs: Number.isFinite(reset) ? reset * 1000 : null }); renderRate(); }
 }
 async function call(path, opts) {
   const raw = !!(opts && opts.raw);
@@ -1317,7 +1327,7 @@ async function loadRepo(repo) {
 }
 // Steps of a finished run never change, so they are kept; the steps of a run still going are only trusted for 30 seconds.
 async function loadJobs(model, run) {
-  const k = model.repo + "#" + run.id;
+  const k = jobKey(model.repo, run);
   if (jobsOf(model, run) !== undefined || state.loadingJobs.has(k) || state.demo) return;
   state.loadingJobs.add(k);
   const gen = state.gen, got = await readJobs("/repos/" + model.repo + "/actions/runs/" + run.id + "/jobs");
@@ -1334,12 +1344,12 @@ async function readJobs(path) {                                          // path
 }
 function omittedOf(model, run) {                                         // jobs of the run that were not read (see gatherJobs)
   if (model.jobs && Object.prototype.hasOwnProperty.call(model.jobs, run.id)) return (model.jobsOmitted && model.jobsOmitted[run.id]) || 0;
-  const e = state.jobsCache.get(model.repo + "#" + run.id);
+  const e = state.jobsCache.get(jobKey(model.repo, run));
   return (e && e.omitted) || 0;
 }
 function jobsOf(model, run) {
   if (model.jobs && Object.prototype.hasOwnProperty.call(model.jobs, run.id)) return model.jobs[run.id];
-  const e = state.jobsCache.get(model.repo + "#" + run.id);
+  const e = state.jobsCache.get(jobKey(model.repo, run));
   return e && (!e.active || Date.now() - e.at < 30000) ? e.jobs : undefined;
 }
 

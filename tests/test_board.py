@@ -33,7 +33,7 @@ FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normIn
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey")
 
 
 def _node(cases: list) -> list:
@@ -916,3 +916,23 @@ def test_the_jobs_of_all_pages_are_joined_once_each_and_the_missing_ones_are_cou
                  ["gatherJobs", [{"jobs": [_gh_job(1), _gh_job(1), _gh_job(2)], "total_count": 3}, [[_gh_job(2)]]]],              # a job listed twice counts once
                  ["gatherJobs", [{"jobs": [_gh_job(1)]}, []]]])                                                                    # no total: nothing to say is missing
     assert [(len(g["jobs"]), g["omitted"]) for g in got] == [(230, 0), (200, 30), (100, 130), (2, 1), (1, 0)]
+
+
+# ---- answers that arrive in any order, and a run that is run again --------------------------------------------------------------------
+
+def test_a_late_quota_reading_never_raises_the_count_and_an_old_window_never_replaces_the_current_one():
+    rate = lambda remaining, reset, limit=5000: {"remaining": remaining, "limit": limit, "resetMs": reset}      # noqa: E731
+    cases = [(rate(100, 1000), rate(120, 1000)),            # a late answer with a higher count: the lower one stays
+             (rate(100, 1000), rate(90, 1000)),             # a lower count is the newer truth
+             (rate(100, 1000), rate(4990, 2000)),           # a new window: the count starts again
+             (rate(100, 2000), rate(4990, 1000)),           # an answer from a window that has ended
+             (None, rate(50, 1000)), (rate(50, 1000), None),
+             (rate(100, None), rate(120, None)), (rate(100, 1000), rate(120, None)), (rate(100, None), rate(120, 1000)),       # no reset time: no window to compare
+             (rate(100, 1000), rate(120, 1000, 60))]
+    assert _node([["mergeRate", list(c)] for c in cases]) == [rate(100, 1000), rate(90, 1000), rate(4990, 2000), rate(100, 2000), rate(50, 1000), rate(50, 1000),
+                                                              rate(120, None), rate(120, None), rate(120, 1000), rate(100, 1000, 60)]
+
+
+def test_the_jobs_read_for_one_attempt_of_a_run_are_not_taken_for_the_next():
+    runs = [{"id": 7}, {"id": 7, "attempt": 0}, {"id": 7, "attempt": 1}, {"id": 7, "attempt": 2}, {"id": 8, "attempt": 2}]
+    assert _node([["jobKey", ["o/r", r]] for r in runs]) == ["o/r#7#1", "o/r#7#1", "o/r#7#1", "o/r#7#2", "o/r#8#2"]
