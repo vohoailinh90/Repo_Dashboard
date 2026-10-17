@@ -813,6 +813,42 @@ def test_the_word_workflow_dispatch_in_a_script_does_not_make_a_workflow_startab
         context.close()
 
 
+def test_the_next_run_of_a_cron_that_fires_often_is_in_the_list_of_what_is_coming(browser):
+    context, page = new_page(browser)
+    page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/weekly.yml"] = (200, "on:\n  schedule:\n    - cron: '*/30 * * * *'\n")
+    page.goto(PAGE_URL)
+    loaded(page)
+    coming = text(page, "#ready-now")
+    assert "Weekly scan" in coming and "(lặp lại)" in coming                                      # not listed run by run, but its next run is there
+    context.close()
+
+
+def test_a_workflow_file_that_could_not_be_read_is_not_taken_for_one_that_declares_nothing(browser):
+    context, page = new_page(browser)
+    page.gh.routes[f"/repos/{REPO}/contents/.github/workflows/nightly.yml"] = (500, {"message": "boom"})
+    page.goto(PAGE_URL)
+    loaded(page)
+    repos(page)
+    assert "1 workflow chưa đọc được file (GitHub không trả lời hoặc token thiếu quyền Contents: Read)" in text(page, "#repo-grid .repo")
+    context.close()
+
+
+def test_workflow_files_are_read_up_to_two_dozen_and_the_rest_are_owned_up_to(browser):
+    context, page = new_page(browser)
+    base = f"/repos/{REPO}"
+    page.gh.routes[f"{base}/actions/workflows"] = (200, {"workflows": [{"id": 200 + i, "name": f"wf-{i}", "path": f".github/workflows/wf-{i}.yml", "state": "active"} for i in range(26)]})
+    page.gh.routes[f"{base}/actions/runs"] = (200, {"workflow_runs": []})
+    for i in range(26):
+        page.gh.routes[f"{base}/actions/workflows/{200 + i}/runs"] = (200, {"workflow_runs": []})
+        page.gh.routes[f"{base}/contents/.github/workflows/wf-{i}.yml"] = (200, "on:\n  push:\n")
+    page.goto(PAGE_URL)
+    repos(page)
+    wait(page, "document.querySelector('#repo-grid .repo .small.bad') !== null")
+    assert len([p for p in page.gh.paths() if re.fullmatch(rf"{base}/contents/\.github/workflows/wf-\d+\.yml", p)]) == 24
+    assert "2 workflow chưa đọc được file (quá giới hạn 24 file)" in text(page, "#repo-grid .repo")
+    context.close()
+
+
 def test_a_workflow_with_a_very_long_file_name_still_has_its_schedule_read(browser):
     context, page = new_page(browser)
     base = f"/repos/{REPO}"

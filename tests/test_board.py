@@ -1008,3 +1008,23 @@ def test_a_workflow_can_be_started_by_hand_only_when_on_says_so():
              ("name: workflow_dispatch\non: push\n", False), ("on:\n  workflow_dispatchx:\n", False), ("on: [workflow_dispatch_two]", False),
              ("on: push\njobs:\n  a:\n    steps:\n      - run: |\n          echo on:\n          workflow_dispatch\n", False), ("", False)]
     assert _node([["hasDispatch", [text]] for text, _ in cases] + [["hasDispatch", [None]]]) == [expected for _, expected in cases] + [False]
+
+
+# ---- quoted keys, and a cron that fires often ----------------------------------------------------------------------------------------
+
+def test_the_keys_of_a_schedule_may_be_quoted():
+    block = "\"on\":\n  \"schedule\":\n    - \"cron\": '0 1 * * *'\n      \"timezone\": 'Asia/Tokyo'\n    - {\"cron\": \"0 2 * * *\", \"timezone\": \"Europe/Paris\"}\n"
+    flow = "on:\n  'schedule': [{\"cron\": \"0 3 * * *\"}]\n"
+    single = "'on':\n  'schedule':\n    - 'cron': '0 4 * * *'\n"
+    assert _node([["extractCrons", [t]] for t in (block, flow, single)]) == [["CRON_TZ=Asia/Tokyo 0 1 * * *", "CRON_TZ=Europe/Paris 0 2 * * *"], ["0 3 * * *"], ["0 4 * * *"]]
+
+
+def test_a_cron_that_fires_often_keeps_its_next_run_and_is_named_only_when_it_fires_in_the_window():
+    models = [_model(repo="o/a", workflows=[_wf("Half", ["*/30 * * * *"]), _wf("Jan", ["*/10 * 1 1 *"]), _wf("Often", ["*/5 * * * *"])])]
+    plan = _one("weekPlan", models, NOW, 7)
+    assert sorted(f["wf"] for f in plan["frequent"]) == ["Half", "Often"]                                        # "Jan" fires only on 1 January: not in this week
+    nexts = {f["wf"]: f["next"] for f in plan["frequent"]}
+    assert nexts["Half"] == int(dt.datetime(2026, 10, 16, 23, 30, tzinfo=UTC).timestamp() * 1000) and nexts["Often"] == int(dt.datetime(2026, 10, 16, 23, 20, tzinfo=UTC).timestamp() * 1000)
+    assert plan["items"] == []
+    in_january = _one("weekPlan", models, int(dt.datetime(2026, 12, 29, 12, 0, tzinfo=UTC).timestamp() * 1000), 7)
+    assert sorted(f["wf"] for f in in_january["frequent"]) == ["Half", "Jan", "Often"]                            # a week that does contain it

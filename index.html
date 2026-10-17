@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-TKaX2irMflHQ5Vvf1HbMozNDSSNc28Y+SRjJIPeg6f8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-1v/Mo9sHdqujPIRU0ZEQJHqUG8ZULxNVxd7zwO2xJTk='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -561,7 +561,7 @@ function normJob(j) {
            startedAt: j.started_at || null, completedAt: j.completed_at || null, steps: (Array.isArray(j.steps) ? j.steps : []).slice(0, 60).map(normStep) };
 }
 const JOB_PAGE = 100, MAX_JOB_PAGES = 5;
-const LIST_PAGE = 100, MAX_PULL_PAGES = 3, MAX_PICK_PAGES = 5, HISTORY_MAX = 24;      // lists GitHub gives a hundred at a time: how far each is read
+const LIST_PAGE = 100, MAX_PULL_PAGES = 3, MAX_PICK_PAGES = 5, HISTORY_MAX = 24, FILES_MAX = 24;      // lists GitHub gives a hundred at a time: how far each is read
 // A run lists its jobs a hundred to a page and says how many it has in all (total_count). The pages to ask for after the first, never more than MAX_JOB_PAGES in all.
 function morePages(first) {
   const total = first && Number.isInteger(first.total_count) ? first.total_count : 0, got = first && Array.isArray(first.jobs) ? first.jobs.length : 0;
@@ -809,7 +809,7 @@ function yamlLines(text) {
 function extractCrons(text) {
   const out = [];
   let indent = -1, item = null;
-  const KEY = (key) => new RegExp("^\\s*(?:-\\s*)?" + key + "\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|([^#\\s][^#]*?))\\s*(?:#.*)?$");
+  const KEY = (key) => new RegExp("^\\s*(?:-\\s*)?[\"']?" + key + "[\"']?\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|([^#\\s][^#]*?))\\s*(?:#.*)?$");
   const CRON_LINE = KEY("cron"), ZONE_LINE = KEY("timezone");
   const pick = (m) => (m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]).trim();
   const keep = (cron, tz) => {                                                                      // `timezone:` is optional; a zone this browser does not know shows nothing rather than a wrong time
@@ -819,16 +819,16 @@ function extractCrons(text) {
   };
   const flush = () => { if (item) keep(item.cron, item.tz); item = null; };
   const flowItem = (inner) => {
-    const c = /cron\s*:\s*(["'])(.*?)\1/.exec(inner), z = /timezone\s*:\s*(?:(["'])(.*?)\1|([^,\s}]+))/.exec(inner);
+    const c = /["']?cron["']?\s*:\s*(["'])(.*?)\1/.exec(inner), z = /["']?timezone["']?\s*:\s*(?:(["'])(.*?)\1|([^,\s}]+))/.exec(inner);
     if (c) keep(c[2].trim(), z ? (z[2] !== undefined ? z[2] : z[3]).trim() : undefined);
   };
   for (const { line, lead, onDirect } of yamlLines(text)) {
     if (indent >= 0 && (lead < indent || (lead === indent && !/^\s*-/.test(line)))) { flush(); indent = -1; }
     if (indent < 0) {
       if (!onDirect) continue;                                                                         // a `schedule` key anywhere else (a matrix, an input) is not the trigger
-      const flow = /^\s*schedule\s*:\s*\[(.*)\]\s*(#.*)?$/.exec(line);
+      const flow = /^\s*["']?schedule["']?\s*:\s*\[(.*)\]\s*(#.*)?$/.exec(line);
       if (flow) { for (const g of flow[1].matchAll(/\{([^}]*)\}/g)) flowItem(g[1]); continue; }
-      if (/^\s*schedule\s*:\s*(#.*)?$/.test(line)) indent = lead;
+      if (/^\s*["']?schedule["']?\s*:\s*(#.*)?$/.test(line)) indent = lead;
       continue;
     }
     if (/^\s*-/.test(line)) flush();                                                                // a new entry of the list starts: the one before is complete
@@ -900,7 +900,11 @@ function weekPlan(models, nowMs, days) {
       for (const cron of wf.crons || []) {
         const c = parseCron(cron);
         if (!c) continue;
-        if (c.minute.length * c.hour.length > FREQUENT_PER_DAY) { frequent.push({ repo: m.repo, wf: wf.name, path: wf.path, cron }); continue; }
+        if (c.minute.length * c.hour.length > FREQUENT_PER_DAY) {          // named once, not run by run; only when it fires inside the window at all, and with its next run
+          const next = occurrences(c, nowMs, until, 1)[0];
+          if (next !== undefined) frequent.push({ repo: m.repo, wf: wf.name, path: wf.path, cron, next });
+          continue;
+        }
         for (const t of occurrences(c, nowMs, until, 60)) items.push({ ms: t, repo: m.repo, wf: wf.name, path: wf.path, cron });
       }
     }
@@ -1347,10 +1351,18 @@ async function loadRepo(repo) {
   const pullsMore = !!pullsRes.more;
   if (pullsMore) warnings.push("Repo có thể còn PR mở nữa: chỉ đọc " + pulls.length + " PR mới nhất (giới hạn " + MAX_PULL_PAGES * LIST_PAGE + ").");
   const workflows = wfList.map((w) => Object.assign({ crons: [], dispatch: false, runs: runList.filter((r) => r.wfId === w.id) }, w));
-  await Promise.all(workflows.filter((w) => w.state === "active" && safeWorkflowPath(w.path)).slice(0, 10).map(async (w) => {
-    const file = await cached("file:" + repo + ":" + w.path, 600000, () => call(base + "/contents/" + w.path.split("/").map(encodeURIComponent).join("/"), { raw: true }));
-    if (file.status === 200 && typeof file.data === "string") { w.crons = extractCrons(file.data); w.dispatch = hasDispatch(file.data); }
-  }));
+  const sources = workflows.filter((w) => w.state === "active" && safeWorkflowPath(w.path)), readable = sources.slice(0, FILES_MAX);
+  let unread = 0;                                                                                          // a workflow whose file was not got declares "nothing" only because nobody could look
+  for (let i = 0; i < readable.length; i += 8) {
+    await Promise.all(readable.slice(i, i + 8).map(async (w) => {
+      const file = await cached("file:" + repo + ":" + w.path, 600000, () => call(base + "/contents/" + pathUrl(w.path), { raw: true }));
+      if (file.status === 200 && typeof file.data === "string") { w.crons = extractCrons(file.data); w.dispatch = hasDispatch(file.data); }
+      else unread++;
+    }));
+  }
+  const skippedFiles = sources.length - readable.length;
+  if (unread + skippedFiles > 0) warnings.push((unread + skippedFiles) + " workflow chưa đọc được file (" + [unread ? "GitHub không trả lời hoặc token thiếu quyền Contents: Read" : "", skippedFiles ? "quá giới hạn " + FILES_MAX + " file" : ""].filter(Boolean).join("; ")
+                                                + "): lịch cron và khả năng chạy tay của chúng có thể thiếu.");
   const agentsRes = await cached("agents:" + repo, 600000, () => call(base + "/contents/.claude/agents"));
   const agentFiles = agentsRes.status === 200 && Array.isArray(agentsRes.data)
     ? agentsRes.data.filter((f) => f && f.type === "file" && /\.md$/i.test(String(f.name))).map((f) => clip(String(f.name).replace(/\.md$/i, ""), 60)).slice(0, 30) : null;
@@ -1521,11 +1533,11 @@ function renderHome(all) {
   const body = items.length ? items.map(({ m, a }) => pipelinePanel(m, a.wf, a.run)) : [h("p", { class: "empty", text: state.repos.length ? (all.length ? "Không có task nào đang chạy hoặc đang chờ." : "Đang tải…") : "Chưa liên kết repo nào. Thêm một repo ở Cài đặt." })];
   if (extra > 0) body.push(h("p", { class: "muted small", text: "Còn " + extra + " task nữa không hiện ở đây (mỗi repo hiện tối đa 4)." }));
   $("home-runs").replaceChildren(...body);
-  const ready = readyNow(all), plan = weekPlan(all, Date.now(), 1).items.slice(0, 3), need = inboxItems(all, Date.now());
+  const ready = readyNow(all), day = weekPlan(all, Date.now(), 1), plan = [...day.items, ...day.frequent.map((f) => ({ ms: f.next, repo: f.repo, wf: f.wf, repeating: true }))].sort((a, b) => a.ms - b.ms).slice(0, 3), need = inboxItems(all, Date.now());
   $("ready-count").textContent = String(ready.length);
   $("ready-now").replaceChildren(...(ready.length || plan.length ? [
     ...ready.slice(0, 6).map((r) => h("li", null, h("b", { class: "mono", text: r.code }), extLink(workflowUrl(r.repo, r.path), r.title), h("small", { text: r.repo + " · khai báo chạy tay (quyền chưa kiểm)" }))),
-    ...plan.map((p) => h("li", null, h("b", { class: "mono", text: clockText(p.ms) }), p.wf, h("small", { text: p.repo + " · theo lịch " + ago((Date.now() - p.ms) / 1000) })))] : [h("li", { class: "muted small", text: "Chưa có workflow nào sẵn sàng." })]));
+    ...plan.map((p) => h("li", null, h("b", { class: "mono", text: clockText(p.ms) }), p.wf, h("small", { text: p.repo + " · theo lịch " + ago((Date.now() - p.ms) / 1000) + (p.repeating ? " (lặp lại)" : "") })))] : [h("li", { class: "muted small", text: "Chưa có workflow nào sẵn sàng." })]));
   $("needs-count").textContent = String(need.length);
   $("needs-you").replaceChildren(...(need.length ? need.slice(0, 6).map(inboxLine) : [h("li", { class: "muted small", text: "Không có gì chờ bạn." })]));
 }
