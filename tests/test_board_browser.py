@@ -403,6 +403,57 @@ def test_a_failed_read_of_a_finished_runs_jobs_is_forgotten_after_half_a_minute_
     context.close()
 
 
+def test_a_failed_first_read_of_the_steps_of_a_running_task_is_forgotten_after_half_a_minute_and_tried_again(browser):
+    context, page = new_page(browser)
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    asked = paged_jobs(context, 3, fail_once_page=1)                                                           # the first read of the run in progress fails; GitHub is back at once
+    page.goto(PAGE_URL)
+    pipe = "document.querySelector('#home-runs .pipe')"
+    wait(page, f"{pipe} !== null && {pipe}.textContent.includes('Chưa đọc được các bước')")
+    assert asked == [1]
+    open_tab(page, "settings")
+    open_tab(page, "home")                                                                                     # drawn again within the half minute: the failure is what is shown, nothing is asked
+    assert "Chưa đọc được các bước" in text(page, "#home-runs .pipe") and asked == [1]
+    page.clock.run_for(31_000)
+    open_tab(page, "settings")
+    open_tab(page, "home")                                                                                     # after it the failure is forgotten and the steps are asked for again
+    wait(page, f"{pipe}.querySelector('.total') !== null")
+    assert "3 job" in text(page, "#home-runs .pipe .total") and asked == [1, 1] and "Chưa đọc được các bước" not in text(page, "#home-runs .pipe")
+    context.close()
+
+
+def test_a_first_read_of_the_steps_of_a_running_task_that_lost_a_page_is_asked_for_again_after_half_a_minute(browser):
+    context, page = new_page(browser)
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    asked = paged_jobs(context, 250, fail_once_page=3)
+    page.goto(PAGE_URL)
+    loaded(page)
+    assert "200 job" in text(page, "#home-runs .pipe .total") and "50 job nữa chưa đọc được" in text(page, "#home-runs .pipe p.bad")           # the third page failed
+    open_tab(page, "settings")
+    open_tab(page, "home")
+    assert "200 job" in text(page, "#home-runs .pipe .total") and asked.count(3) == 1                           # within the half minute what was read is shown, nothing is asked
+    page.clock.run_for(31_000)
+    open_tab(page, "settings")
+    open_tab(page, "home")
+    wait(page, "document.querySelector('#home-runs .pipe .total') !== null && document.querySelector('#home-runs .pipe .total').textContent.includes('250 job')")
+    assert asked.count(3) == 2 and page.locator("#home-runs .pipe p.bad").count() == 0
+    context.close()
+
+
+def test_the_steps_of_a_running_task_read_in_full_are_not_asked_for_again_when_the_page_is_drawn_later(browser):
+    context, page = new_page(browser)
+    page.clock.install(time=dt.datetime.now(dt.timezone.utc))
+    asked = paged_jobs(context, 3)
+    page.goto(PAGE_URL)
+    loaded(page)
+    assert asked == [1]
+    page.clock.run_for(31_000)
+    open_tab(page, "settings")
+    open_tab(page, "home")                                                                                     # what the repository read stays until the repository is read again
+    assert "3 job" in text(page, "#home-runs .pipe .total") and asked == [1]
+    context.close()
+
+
 def test_a_run_that_is_run_again_does_not_show_the_steps_of_its_earlier_attempt(browser):
     context, page = new_page(browser)
     page.goto(PAGE_URL)

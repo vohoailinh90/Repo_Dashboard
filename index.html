@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-IJAJArxylOiptqAnAO/sVodWgDlMygPNL1LThX4dIw8='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-UxommFjZXkcLW0XkrcizQiHeMySvAND/ZUIh1WmhABQ='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -1413,7 +1413,7 @@ async function readWorkflowList(base) {
   return { status: 200, data: { workflows: all }, more };
 }
 async function loadRepo(repo) {
-  const base = "/repos/" + repo, warnings = [];
+  const base = "/repos/" + repo, warnings = [], gen = state.gen;
   const [info, runsRes, wfsRes, pullsRes] = await Promise.all([call(base), call(base + "/actions/runs?per_page=40"), readWorkflowList(base), readPages(base + "/pulls?state=open", MAX_PULL_PAGES)]);
   if (info.status !== 200) return { repo, ok: false, error: explain(info.status, info.data) };
   let runList = [], wfList = [], pulls = [];
@@ -1463,8 +1463,9 @@ async function loadRepo(repo) {
   const shown = active.slice(0, 4), jobs = {}, jobsOmitted = {};
   await Promise.all(shown.map(async (a) => {
     const got = await readJobs(base + "/actions/runs/" + a.run.id + "/jobs");
-    jobs[a.run.id] = got ? got.jobs : null;
-    if (got && got.omitted) jobsOmitted[a.run.id] = got.omitted;
+    if (got && !got.failed) { jobs[a.run.id] = got.jobs; if (got.omitted) jobsOmitted[a.run.id] = got.omitted; return; }
+    // A read that failed, or lost a page, is not the model's for good: it goes where an on-demand read goes, to be forgotten after half a minute and asked for again.
+    if (gen === state.gen) state.jobsCache.set(jobKey(repo, a.run), { at: Date.now(), active: true, jobs: got ? got.jobs : null, omitted: got ? got.omitted : 0, incomplete: true });
   }));
   return { repo, ok: true, loadedAt: Date.now(), warnings, info: normInfo(info.data), workflows, active: shown, activeExtra: active.length - shown.length, jobs, jobsOmitted, pulls, pullsMore, agentFiles };
 }
@@ -1592,6 +1593,7 @@ function pipelineBody(model, run) {
 }
 function pipelinePanel(model, wf, run) {
   const st = runState(run);
+  if (jobsOf(model, run) === undefined) loadJobs(model, run);                  // the steps the repository read could not be got (and the half minute is over): ask again, once at a time
   return h("article", { class: "panel pipe glow" }, h("p", { class: "cap", text: "Pipeline" }),
     h("header", null, badge(st), h("b", { text: wf.name }), extLink(gh(model.repo, "/actions/runs/" + run.id), "Mở trên GitHub"), st.key === "running" ? sinceNode(run.startedAt, "đã chạy ") : sinceNode(run.createdAt, "chờ "),
       h("span", { class: "meta", text: model.repo + " · lượt #" + run.number + " · " + run.event + (run.branch ? " · nhánh " + run.branch : "") })),
