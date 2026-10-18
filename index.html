@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-8OfhR/PydwLHKpzlXGTBhEUOjndMd77YKwJWQkHTZ1Q='; style-src 'sha256-hWdEADeE1TjiOO5MIHeTHo76DCXM/DSUEYWQIwWoMFE='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-tHgbLWhQ9N0Yuq2T7OqiEi+/vrAGHH9jLshhMPW56C4='; style-src 'sha256-r+B/r5SG1LZYsV/BA8Ze8c5YRq27CcZXGpJoi0wUauA='; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>GitHub Radar: bảng theo dõi repo</title>
 <style>
@@ -227,6 +227,130 @@ progress::-webkit-progress-bar { background: var(--card2); } progress::-webkit-p
 .healthrow:first-of-type { border-top: 0; }
 .healthrow .badge { justify-self: start; }
 @media (max-width: 720px) { .healthrow { grid-template-columns: 1fr 1fr; } .topin { gap: 8px; } .brand { display: none; } }
+/* Office: the agent office of claude-agent-routing-template, redrawn here. One hue per department (its office/src/index.css, from the Automation UI Kit palette);
+   a department is also named in words, so no hue carries meaning alone. Robots are SVG made by the script, coloured by --dept and moved by data-state. */
+:root { --dept-aqua: #1baf7a; --dept-orange: #eb6834; --dept-violet: #6250d6; --dept-magenta: #e87ba4; --dept-yellow: #eda100; --dept-slate: #6b7c93;
+        --robot-face: #0f1b2d; --robot-eye: #8ff3e1; --robot-screen: #1b2a40; --robot-desk: #c9d4e0; --lane-mix: 9%; }
+html[data-eff="dark"] { --dept-aqua: #199e70; --dept-orange: #d95926; --dept-violet: #9085e9; --dept-magenta: #d55181; --dept-yellow: #c98500; --dept-slate: #8294ad;
+                        --robot-face: #070c14; --robot-screen: #0d1522; --robot-desk: #2a3a50; --lane-mix: 14%; }
+.dept-aqua { --dept: var(--dept-aqua); } .dept-orange { --dept: var(--dept-orange); } .dept-violet { --dept: var(--dept-violet); }
+.dept-magenta { --dept: var(--dept-magenta); } .dept-yellow { --dept: var(--dept-yellow); } .dept-slate { --dept: var(--dept-slate); }
+.ofc [data-state="idle"], .ofc [data-state="waiting"] { --sc: var(--muted); } .ofc [data-state="working"] { --sc: var(--s-running); }
+.ofc [data-state="reviewing"] { --sc: var(--s-needs); } .ofc [data-state="done"] { --sc: var(--s-ready); } .ofc [data-state="blocked"] { --sc: var(--bad); }
+.ofc progress::-webkit-progress-value { background: var(--sc, var(--accent)); } .ofc progress::-moz-progress-bar { background: var(--sc, var(--accent)); }
+.ofc-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 4px 0 12px; }
+.ofc-top h2 { margin-right: auto; font-size: 20px; }
+.ofc-player { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 14px; }
+.ofc-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; flex: 1 1 520px; min-width: 0; }
+.ofc-chip { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line2); border-radius: 999px; padding: 3px 12px; font-size: 13px; font-weight: 600; }
+.ofc-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); }
+.ofc-chip.is-file::before { background: var(--s-ready); border-color: var(--s-ready); }
+.ofc-pos { display: flex; align-items: center; gap: 12px; flex: 1 1 240px; min-width: 0; margin: 0; font-weight: 400; }
+.ofc-pos input { flex: 1; min-width: 0; accent-color: var(--s-running); }
+#ofc-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ofc-note { display: grid; gap: 6px; }
+.ofc-note h3 { font-size: 14.5px; }
+.ofc-note code.cmd { display: block; overflow-x: auto; white-space: pre; padding: 8px 12px; border-radius: 8px; }
+.ofc-floor { position: relative; display: flex; flex-direction: column; gap: 26px; margin-bottom: 18px; }
+.ofc-floor > svg { position: absolute; left: 0; top: 0; z-index: 1; pointer-events: none; overflow: visible; }
+.ofc-boss { position: relative; z-index: 2; display: grid; gap: 18px 30px; padding: 20px 22px; border-radius: calc(var(--radius) + 6px);
+            border: 1px solid color-mix(in oklab, var(--dept) 32%, var(--line)); background: color-mix(in oklab, var(--dept) 7%, var(--card)); }
+@media (min-width: 760px) { .ofc-boss { grid-template-columns: 176px minmax(0, 1fr); } .ofc-boss .ofc-budget { grid-column: 1 / -1; } }
+@media (min-width: 1100px) { .ofc-boss { grid-template-columns: 176px minmax(0, 1fr) 280px; align-items: center; } .ofc-boss .ofc-budget { grid-column: auto; } }
+.ofc-who { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+.ofc-who .bot { width: 96px; }
+.ofc-who h3 { font-size: 16px; font-weight: 800; } .ofc-who p { margin: 0; font-size: 12.5px; color: var(--muted); }
+@media (min-width: 760px) { .ofc-who { flex-direction: column; text-align: center; } .ofc-who .bot { width: 144px; } }
+.ofc-main { display: grid; gap: 8px; min-width: 0; }
+.ofc-tags { display: flex; flex-wrap: wrap; gap: 6px; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+.ofc-tags span { border: 1px solid var(--line2); border-radius: 6px; padding: 0 8px; overflow-wrap: anywhere; } .ofc-tags .tier { background: var(--ink); border-color: var(--ink); color: var(--card); }
+.ofc-req { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.ofc-line { margin: 0; min-height: 2.9em; color: var(--muted); font-size: 13.5px; overflow-wrap: anywhere; }
+.ofc-meter { --sc: var(--s-running); display: flex; align-items: center; gap: 16px; } .ofc-meter progress { height: 12px; }
+.ofc-meter b { min-width: 3.3ch; text-align: right; font-size: 36px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.ofc-phase { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 4px 0 0; }
+.ofc-phase li { border: 1px solid var(--line2); border-radius: 999px; padding: 3px 12px; font-size: 12.5px; font-weight: 600; }
+.ofc-phase li.next { border-style: dashed; color: var(--muted); font-weight: 400; }
+.ofc-phase li.past::before { content: "✓ "; color: color-mix(in oklab, var(--s-ready) var(--chip-mix), var(--ink)); }
+.ofc-phase li.now { border-color: var(--s-running); background: color-mix(in oklab, var(--s-running) 12%, var(--card)); }
+.ofc-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 0; margin: 6px 0 0; }
+.ofc-stats div { display: flex; flex-direction: column; padding-right: 12px; min-width: 0; }
+.ofc-stats dd { order: 1; margin: 0; font-size: 28px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.ofc-stats dt { order: 2; font-size: 12.5px; color: var(--muted); }
+@media (min-width: 640px) { .ofc-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); } .ofc-stats div + div { border-left: 1px solid var(--line); padding-left: 12px; } }
+.ofc-budget { display: grid; gap: 9px; align-content: start; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); }
+.ofc-budget h4 { margin: 0; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.ofc-budget p { margin: 0; font-size: 12px; color: var(--muted); }
+.ofc-slot { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; font-size: 13px; }
+.ofc-slot b { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width: 2.6rem; text-align: right; }
+.ofc-pips { display: inline-flex; flex-wrap: wrap; gap: 4px; } .ofc-pips i { width: 16px; height: 8px; border-radius: 3px; border: 1px dashed var(--muted); }
+.ofc-pips i.granted { border-style: solid; } .ofc-pips i.used { border: 1px solid var(--s-running); background: var(--s-running); }
+.ofc-lanes { display: flex; flex-wrap: wrap; gap: 16px; }
+.ofc-lane { flex: 1 1 204px; min-width: 0; padding: 12px; border: 1px solid color-mix(in oklab, var(--dept) 28%, var(--line)); border-radius: calc(var(--radius) + 6px); background: color-mix(in oklab, var(--dept) var(--lane-mix), var(--card)); }
+.ofc-lane[data-n="2"] { flex: 2 1 408px; } .ofc-lane[data-n="3"] { flex: 3 1 612px; } .ofc-lane[data-n="4"] { flex: 4 1 816px; }
+.ofc-lane > header { display: flex; align-items: center; gap: 8px; padding: 0 4px 10px; }
+.ofc-lane > header i { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--dept); }
+.ofc-lane > header h3, .ofc-lane > header span { position: relative; z-index: 2; padding: 0 6px; border-radius: 6px; background: color-mix(in oklab, var(--dept) var(--lane-mix), var(--card)); color: var(--muted); }
+.ofc-lane > header h3 { font-size: 12px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+.ofc-lane > header span { margin-left: auto; font: 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ofc-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(168px, 100%), 1fr)); gap: 10px; }
+.ofc-card { position: relative; z-index: 2; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: calc(var(--radius) + 2px); background: var(--card); }
+.ofc-card[data-state="working"], .ofc-card[data-state="reviewing"], .ofc-card[data-state="blocked"] { border-color: var(--sc); box-shadow: 0 0 0 3px color-mix(in oklab, var(--sc) 22%, transparent); }
+.ofc-card .hd { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 26px; }
+.ofc-tag { border-radius: 6px; padding: 1px 6px; background: var(--ink); color: var(--card); font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; }
+.ofc-card .bot { width: 100%; max-width: 132px; margin: 0 auto; }
+.ofc-card h4 { margin: 2px 0 0; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.ofc-card .role { margin: 0; font-size: 12.5px; color: var(--muted); }
+.ofc-card .desc { margin: 4px 0 0; min-height: 4.2em; font-size: 13px; line-height: 1.4; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.ofc-card .bar { display: flex; align-items: center; gap: 8px; }
+.ofc-card .bar span { min-width: 4.2ch; text-align: right; font: 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+.ofc-card .meta { margin: 0; min-height: 1.3em; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); overflow-wrap: anywhere; }
+.ofc-edge path { fill: none; stroke: var(--muted); stroke-opacity: .45; stroke-width: 1.5; stroke-dasharray: 3 5; stroke-linecap: round; }
+.ofc-edge circle { fill: var(--muted); fill-opacity: .55; }
+.ofc-edge[data-s="done"] path { stroke-dasharray: none; stroke-opacity: .4; }
+.ofc-edge[data-s="active"] path { stroke: var(--s-running); stroke-opacity: 1; stroke-width: 2.6; stroke-dasharray: 7 7; animation: ofc-flow .7s linear infinite; }
+.ofc-edge[data-s="active"] circle { fill: var(--s-running); fill-opacity: 1; }
+.ofc-log { list-style: none; margin: 0; padding: 0; }
+.ofc-log li { display: grid; grid-template-columns: 4.8rem minmax(0, 1fr); gap: 2px 12px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13.5px; }
+.ofc-log li:first-child { border-top: 0; }
+.ofc-log time { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ofc-log b { overflow-wrap: anywhere; } .ofc-log .what { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
+.ofc-log .k { margin-right: 2px; font-weight: 700; color: color-mix(in oklab, var(--tone) var(--chip-mix), var(--ink)); }
+@media (min-width: 640px) { .ofc-log li { grid-template-columns: 4.8rem 11rem minmax(0, 1fr); } .ofc-log .what { grid-column: 3; } }
+.ofc-load summary { cursor: pointer; font-weight: 600; }
+.bot { display: block; width: 100%; height: auto; overflow: visible; }
+.bot .desk { fill: var(--robot-desk); } .bot .m-body { fill: var(--robot-screen); } .bot .plate { fill: var(--robot-face); }
+.bot .m-stand, .bot .m-base, .bot .kb rect { fill: color-mix(in oklab, var(--muted) 45%, var(--bg)); }
+.bot .m-line { fill: var(--robot-eye); opacity: 0; transform-box: fill-box; transform-origin: left center; }
+.bot .head, .bot .ball { fill: var(--dept, var(--dept-slate)); } .bot .body { fill: color-mix(in oklab, var(--dept, var(--dept-slate)) 78%, var(--card)); }
+.bot .arm, .bot .ant { fill: none; stroke: var(--dept, var(--dept-slate)); stroke-linecap: round; } .bot .arm { stroke-width: 4; } .bot .ant { stroke-width: 2.4; }
+.bot .eyes, .bot .bdg, .bot .zzz { display: none; }
+.bot .e-open circle { fill: var(--robot-eye); }
+.bot .e-sleep path, .bot .e-happy path, .bot .e-x path, .bot .chev { fill: none; stroke: var(--robot-eye); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.bot .e-sleep path { opacity: .65; } .bot .e-x path { stroke: #ff8f8f; } .bot .chev { stroke-width: 2; opacity: .5; }
+.bot .b-done circle { fill: var(--s-ready); } .bot .b-crit circle { fill: var(--bad); }
+.bot .bdg path { fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.bot .zzz { fill: var(--muted); font: 700 9px system-ui, sans-serif; }
+.bot .term-dot { fill: color-mix(in oklab, var(--muted) 55%, var(--robot-screen)); } .bot .cursor { fill: var(--robot-eye); opacity: 0; }
+.bot[data-state="idle"] .e-sleep, .bot[data-state="waiting"] .e-open, .bot[data-state="working"] .e-open, .bot[data-state="reviewing"] .e-open, .bot[data-state="done"] .e-happy, .bot[data-state="blocked"] .e-x { display: inline; }
+.bot[data-state="idle"] .zzz { display: inline; animation: ofc-float 2.4s ease-in-out infinite; }
+.bot[data-state="done"] .b-done, .bot[data-state="blocked"] .b-crit { display: inline; }
+.bot[data-state="reviewing"] .ball { fill: var(--s-needs); } .bot[data-state="done"] .m-line { opacity: .55; } .bot[data-state="done"] .cursor { opacity: .5; }
+.bot[data-state="working"] .m-line, .bot[data-state="reviewing"] .m-line { opacity: .95; animation: ofc-code 1.8s ease-in-out infinite; }
+.bot[data-state="working"] .l2, .bot[data-state="reviewing"] .l2 { animation-duration: 2.3s; animation-delay: -.6s; }
+.bot[data-state="working"] .l3, .bot[data-state="reviewing"] .l3 { animation-duration: 1.5s; animation-delay: -1.1s; }
+.bot[data-state="working"] .cursor, .bot[data-state="reviewing"] .cursor { animation: ofc-cursor 1s steps(1) infinite; }
+.bot[data-state="working"] .rb, .bot[data-state="reviewing"] .rb { animation: ofc-bob 1.1s ease-in-out infinite; }
+.bot[data-state="working"] .arm, .bot[data-state="reviewing"] .arm { transform-origin: 44px 50px; animation: ofc-type .45s ease-in-out infinite alternate; }
+.bot[data-state="working"] .e-open, .bot[data-state="reviewing"] .e-open { transform-box: fill-box; transform-origin: center; animation: ofc-blink 4s infinite; }
+@keyframes ofc-flow { to { stroke-dashoffset: -14; } }
+@keyframes ofc-bob { 50% { transform: translateY(-1.4px); } }
+@keyframes ofc-type { from { transform: rotate(-7deg); } to { transform: rotate(4deg); } }
+@keyframes ofc-code { 0%, 100% { transform: scaleX(.35); } 50% { transform: scaleX(1); } }
+@keyframes ofc-blink { 0%, 92%, 100% { transform: scaleY(1); } 96% { transform: scaleY(.1); } }
+@keyframes ofc-cursor { 50% { opacity: 0; } }
+@keyframes ofc-float { 50% { transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .ofc-edge[data-s="active"] path { stroke-dasharray: none; } }
 </style>
 </head>
 <body>
@@ -242,6 +366,7 @@ progress::-webkit-progress-bar { background: var(--card2); } progress::-webkit-p
       <button type="button" role="tab" id="tab-schedule" data-view="schedule" aria-controls="view-schedule" aria-selected="false" tabindex="-1">Lịch</button>
       <button type="button" role="tab" id="tab-inbox" data-view="inbox" aria-controls="view-inbox" aria-selected="false" tabindex="-1">Inbox <span id="inbox-count" class="count" hidden>0</span></button>
       <button type="button" role="tab" id="tab-agents" data-view="agents" aria-controls="view-agents" aria-selected="false" tabindex="-1">Agent</button>
+      <button type="button" role="tab" id="tab-office" data-view="office" aria-controls="view-office" aria-selected="false" tabindex="-1">Office</button>
       <button type="button" role="tab" id="tab-health" data-view="health" aria-controls="view-health" aria-selected="false" tabindex="-1">Health</button>
       <button type="button" role="tab" id="tab-settings" data-view="settings" aria-controls="view-settings" aria-selected="false" tabindex="-1">Cài đặt</button>
     </nav>
@@ -336,6 +461,37 @@ progress::-webkit-progress-bar { background: var(--card2); } progress::-webkit-p
       <p class="muted small">Nhận diện theo <b>tên</b> workflow, nhánh (<code>claude/</code>, <code>codex/</code>, <code>copilot/</code>…) và tác giả PR, cùng danh sách agent khai báo trong <code>.claude/agents/</code>. Đây là suy đoán theo tên, không phải trạng thái thật của phiên agent.</p>
       <div id="agents-body"></div>
     </div>
+  </section>
+
+  <section id="view-office" role="tabpanel" aria-labelledby="tab-office" class="ofc" hidden>
+    <div class="ofc-top">
+      <h2>Văn phòng agent</h2>
+      <div class="seg" role="group" aria-label="Chế độ xem"><button type="button" id="ofc-claude" aria-pressed="true">Subagent Claude</button><button type="button" id="ofc-team" aria-pressed="false">Pipeline VPS</button></div>
+      <div class="seg" role="group" aria-label="Nguồn dữ liệu"><button type="button" id="ofc-file" aria-pressed="false">Snapshot đã nạp</button><button type="button" id="ofc-sample" aria-pressed="true">Chạy mẫu</button></div>
+    </div>
+    <div class="ofc-player" role="group" aria-label="Điều khiển phát lại">
+      <span id="ofc-chip" class="ofc-chip">Chạy mẫu</span>
+      <span id="ofc-controls" class="ofc-controls">
+        <button type="button" id="ofc-play"><span id="ofc-play-glyph" aria-hidden="true">❚❚</span> <span id="ofc-play-word">Tạm dừng</span></button>
+        <button type="button" id="ofc-restart"><span aria-hidden="true">↺</span> Từ đầu</button>
+        <span class="seg tiny" role="group" aria-label="Tốc độ phát"><button type="button" data-speed="1" aria-pressed="false">1×</button><button type="button" data-speed="2" aria-pressed="true">2×</button><button type="button" data-speed="4" aria-pressed="false">4×</button><button type="button" data-speed="8" aria-pressed="false">8×</button></span>
+        <label class="ofc-pos"><span class="sr">Thời điểm trong lượt chạy</span><input type="range" id="ofc-pos" min="0" max="1" step="0.1" value="0"><span id="ofc-time" class="mono small muted">00:00 / 00:00</span></label>
+      </span>
+    </div>
+    <div id="ofc-notes"></div>
+    <div id="ofc-floor" class="ofc-floor"></div>
+    <section class="panel ofc-logbox" aria-labelledby="ofc-log-h">
+      <h3 id="ofc-log-h" class="cap">Nhật ký bàn giao</h3>
+      <ol id="ofc-log" class="ofc-log"></ol>
+    </section>
+    <p id="ofc-foot" class="muted small"></p>
+    <details id="ofc-load" class="panel ofc-load">
+      <summary>Nạp dữ liệu thật (snapshot.json)</summary>
+      <p class="muted small">Văn phòng agent ghi trạng thái thật bằng hook của Claude Code, trên máy chạy agent. Trong checkout của <code>claude-agent-routing-template</code> (hoặc repo tạo từ nó), chạy <code>python3 scripts/office/snapshot.py &gt; snapshot.json</code> (subagent Claude) hoặc <code>python3 scripts/office/snapshot.py --mode team --team-home /srv/team &gt; snapshot.json</code> (pipeline VPS), rồi chọn file. File chỉ được đọc trong trình duyệt, không gửi đi đâu, không lưu; đây cũng là file mà tab Agent nạp.</p>
+      <label for="ofc-input">File snapshot.json</label>
+      <input id="ofc-input" type="file" accept=".json,application/json" data-msg="ofc-msg">
+      <p id="ofc-msg" class="msg" role="status" aria-live="polite"></p>
+    </details>
   </section>
 
   <section id="view-health" role="tabpanel" aria-labelledby="tab-health" hidden>
@@ -463,6 +619,83 @@ progress::-webkit-progress-bar { background: var(--card2); } progress::-webkit-p
   "log": [{"ago": 20, "kind": "start", "agent": "code-reviewer", "text": "Soát diff và chạy kiểm tra"}, {"ago": 140, "kind": "done", "agent": "architect", "text": "1 phương án, 0 câu hỏi mở"}]}
 }
 </script>
+<script type="application/json" id="office-sample">
+{"version":1,"runs":{
+ "claude":{"start":1760000000.0,"end":1760000112.0,
+  "base":{"version":1,"mode":"claude","empty":false,"hints":["no_events"],"feature":null,"features":[],"requirement":{"id":"REQ-031","tier":"T3","lane":"claude","strategy":"main_with_critic_and_reviewer","required":["architecture-critic","code-reviewer-t3"]},"boss":{"id":"main","kind":"robot","state":"idle","task":null,"waiting_for":null},"phase":{"steps":["analysis","design","implement","verify"],"current":"analysis"},"progress":{"pct":0,"agents":3,"total":3,"running":0,"done":0,"blocked":0},"budget":[{"id":"base","cap":3,"granted":3,"used":0},{"id":"analyst_reserve","cap":1,"granted":1,"used":0},{"id":"escalation_reserve","cap":1,"granted":0,"used":0}],"lanes":[{"id":"requirements","color":"aqua","agents":["requirement-analyst"]},{"id":"architecture","color":"orange","agents":["architecture-critic","architect"]},{"id":"delivery","color":"violet","agents":["implementer"]},{"id":"verification","color":"magenta","agents":["code-reviewer-t3","test-engineer","code-reviewer-verify"]}],"agents":{"requirement-analyst":{"id":"requirement-analyst","state":"waiting","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":"sonnet","effort":"medium","tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"architecture-critic":{"id":"architecture-critic","state":"waiting","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":"sonnet","effort":"high","tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"architect":{"id":"architect","state":"idle","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":"sonnet","effort":"high","tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"implementer":{"id":"implementer","state":"idle","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":"sonnet","effort":"high","tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"code-reviewer-t3":{"id":"code-reviewer-t3","state":"waiting","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":"sonnet","effort":"high","tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"test-engineer":{"id":"test-engineer","state":"idle","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":"sonnet","effort":"high","tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"code-reviewer-verify":{"id":"code-reviewer-verify","state":"idle","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":"sonnet","effort":"high","tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"}},"edges":[{"from":"main","to":"requirement-analyst","state":"planned"},{"from":"main","to":"architecture-critic","state":"planned"},{"from":"main","to":"code-reviewer-t3","state":"planned"}],"log":[],"warnings":[]},
+  "steps":[
+   [1.0,{"hints":[],"boss":{"state":"working"}}],
+   [6.0,{"boss":{"state":"waiting","task":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?","waiting_for":"requirement-analyst"},"progress":{"running":1},"budget":[{"id":"base","cap":3,"granted":3,"used":0},{"id":"analyst_reserve","cap":1,"granted":1,"used":1},{"id":"escalation_reserve","cap":1,"granted":0,"used":0}],"agents":{"requirement-analyst":{"state":"working","task":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?","progress":0.0,"tag":"received","since":1760000006.0,"runs":1,"turns":{"used":0,"max":8}}},"edges":[{"from":"main","to":"requirement-analyst","state":"active"},{"from":"main","to":"architecture-critic","state":"planned"},{"from":"main","to":"code-reviewer-t3","state":"planned"}],"log":[{"t":1760000006.0,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [6.4,{"agents":{"requirement-analyst":{"since":1760000006.4}},"log":[{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [7.2,{"progress":{"pct":4},"agents":{"requirement-analyst":{"progress":0.125,"turns":{"used":1}}}}],
+   [8.8,{"progress":{"pct":8},"agents":{"requirement-analyst":{"progress":0.25,"turns":{"used":2}}}}],
+   [10.4,{"progress":{"pct":12},"agents":{"requirement-analyst":{"progress":0.375,"tag":null,"turns":{"used":3}}}}],
+   [12.0,{"progress":{"pct":17},"agents":{"requirement-analyst":{"progress":0.5,"turns":{"used":4}}}}],
+   [13.6,{"progress":{"pct":21},"agents":{"requirement-analyst":{"progress":0.625,"turns":{"used":5}}}}],
+   [15.2,{"progress":{"pct":25},"agents":{"requirement-analyst":{"progress":0.75,"turns":{"used":6}}}}],
+   [17.0,{"boss":{"state":"working","task":null,"waiting_for":null},"phase":{"current":"design"},"progress":{"pct":33,"running":0,"done":1},"agents":{"requirement-analyst":{"state":"done","note":"3 giả định đã chốt, 1 câu hỏi cho người","progress":1.0,"tag":"handoff","since":1760000017.0}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"requirement-analyst","to":"main","state":"active"},{"from":"main","to":"architecture-critic","state":"planned"},{"from":"main","to":"code-reviewer-t3","state":"planned"}],"log":[{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [17.1,{"agents":{"requirement-analyst":{"tokens":18200.0,"duration_ms":10600.0}}}],
+   [21.0,{"agents":{"requirement-analyst":{"tag":null}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"planned"},{"from":"main","to":"code-reviewer-t3","state":"planned"}]}],
+   [29.0,{"boss":{"state":"waiting","task":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng","waiting_for":"architecture-critic"},"progress":{"running":1},"budget":[{"id":"base","cap":3,"granted":3,"used":1},{"id":"analyst_reserve","cap":1,"granted":1,"used":1},{"id":"escalation_reserve","cap":1,"granted":0,"used":0}],"agents":{"architecture-critic":{"state":"reviewing","task":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng","progress":0.0,"tag":"received","since":1760000029.0,"runs":1,"turns":{"used":0,"max":12}}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"active"},{"from":"main","to":"code-reviewer-t3","state":"planned"}],"log":[{"t":1760000029.0,"kind":"start","agent":"architecture-critic","text":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng"},{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [29.4,{"agents":{"architecture-critic":{"since":1760000029.4}},"log":[{"t":1760000029.4,"kind":"start","agent":"architecture-critic","text":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng"},{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [30.2,{"progress":{"pct":36},"agents":{"architecture-critic":{"progress":0.08333333333333333,"turns":{"used":1}}}}],
+   [31.3,{"progress":{"pct":39},"agents":{"architecture-critic":{"progress":0.16666666666666666,"turns":{"used":2}}}}],
+   [32.3,{"progress":{"pct":42},"agents":{"architecture-critic":{"progress":0.25,"turns":{"used":3}}}}],
+   [33.4,{"progress":{"pct":44},"agents":{"architecture-critic":{"progress":0.3333333333333333,"tag":null,"turns":{"used":4}}}}],
+   [34.5,{"progress":{"pct":47},"agents":{"architecture-critic":{"progress":0.4166666666666667,"turns":{"used":5}}}}],
+   [35.5,{"progress":{"pct":50},"agents":{"architecture-critic":{"progress":0.5,"turns":{"used":6}}}}],
+   [36.6,{"progress":{"pct":53},"agents":{"architecture-critic":{"progress":0.5833333333333334,"turns":{"used":7}}}}],
+   [37.7,{"progress":{"pct":56},"agents":{"architecture-critic":{"progress":0.6666666666666666,"turns":{"used":8}}}}],
+   [38.7,{"progress":{"pct":58},"agents":{"architecture-critic":{"progress":0.75,"turns":{"used":9}}}}],
+   [40.0,{"boss":{"state":"working","task":null,"waiting_for":null},"phase":{"current":"implement"},"progress":{"pct":67,"running":0,"done":2},"agents":{"architecture-critic":{"state":"done","note":"2 mục high đã xử lý, 0 critical","progress":1.0,"tag":"handoff","since":1760000040.0}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"done"},{"from":"architecture-critic","to":"main","state":"active"},{"from":"main","to":"code-reviewer-t3","state":"planned"}],"log":[{"t":1760000040.0,"kind":"done","agent":"architecture-critic","text":"2 mục high đã xử lý, 0 critical"},{"t":1760000029.4,"kind":"start","agent":"architecture-critic","text":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng"},{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [40.1,{"agents":{"architecture-critic":{"tokens":31200.0,"duration_ms":10600.0}}}],
+   [44.0,{"agents":{"architecture-critic":{"tag":null}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"done"},{"from":"main","to":"code-reviewer-t3","state":"planned"}]}],
+   [52.0,{"boss":{"state":"waiting","task":"Đọc diff và chạy kiểm chứng độc lập","waiting_for":"code-reviewer-t3"},"phase":{"current":"verify"},"progress":{"running":1},"budget":[{"id":"base","cap":3,"granted":3,"used":2},{"id":"analyst_reserve","cap":1,"granted":1,"used":1},{"id":"escalation_reserve","cap":1,"granted":0,"used":0}],"agents":{"code-reviewer-t3":{"state":"reviewing","task":"Đọc diff và chạy kiểm chứng độc lập","progress":0.0,"tag":"received","since":1760000052.0,"runs":1,"turns":{"used":0,"max":16}}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"done"},{"from":"main","to":"code-reviewer-t3","state":"active"}],"log":[{"t":1760000052.0,"kind":"start","agent":"code-reviewer-t3","text":"Đọc diff và chạy kiểm chứng độc lập"},{"t":1760000040.0,"kind":"done","agent":"architecture-critic","text":"2 mục high đã xử lý, 0 critical"},{"t":1760000029.4,"kind":"start","agent":"architecture-critic","text":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng"},{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [52.4,{"agents":{"code-reviewer-t3":{"since":1760000052.4}},"log":[{"t":1760000052.4,"kind":"start","agent":"code-reviewer-t3","text":"Đọc diff và chạy kiểm chứng độc lập"},{"t":1760000040.0,"kind":"done","agent":"architecture-critic","text":"2 mục high đã xử lý, 0 critical"},{"t":1760000029.4,"kind":"start","agent":"architecture-critic","text":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng"},{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [53.2,{"progress":{"pct":69},"agents":{"code-reviewer-t3":{"progress":0.0625,"turns":{"used":1}}}}],
+   [54.0,{"progress":{"pct":71},"agents":{"code-reviewer-t3":{"progress":0.125,"turns":{"used":2}}}}],
+   [54.8,{"progress":{"pct":73},"agents":{"code-reviewer-t3":{"progress":0.1875,"turns":{"used":3}}}}],
+   [55.5,{"progress":{"pct":75},"agents":{"code-reviewer-t3":{"progress":0.25,"turns":{"used":4}}}}],
+   [56.3,{"progress":{"pct":77},"agents":{"code-reviewer-t3":{"progress":0.3125,"turns":{"used":5}}}}],
+   [56.4,{"agents":{"code-reviewer-t3":{"tag":null}}}],
+   [57.1,{"progress":{"pct":79},"agents":{"code-reviewer-t3":{"progress":0.375,"turns":{"used":6}}}}],
+   [57.9,{"progress":{"pct":81},"agents":{"code-reviewer-t3":{"progress":0.4375,"turns":{"used":7}}}}],
+   [58.7,{"progress":{"pct":83},"agents":{"code-reviewer-t3":{"progress":0.5,"turns":{"used":8}}}}],
+   [59.5,{"progress":{"pct":85},"agents":{"code-reviewer-t3":{"progress":0.5625,"turns":{"used":9}}}}],
+   [60.2,{"progress":{"pct":88},"agents":{"code-reviewer-t3":{"progress":0.625,"turns":{"used":10}}}}],
+   [61.0,{"progress":{"pct":90},"budget":[{"id":"base","cap":3,"granted":3,"used":2},{"id":"analyst_reserve","cap":1,"granted":1,"used":1},{"id":"escalation_reserve","cap":1,"granted":1,"used":0}],"agents":{"code-reviewer-t3":{"progress":0.6875,"turns":{"used":11}}}}],
+   [62.0,{"boss":{"state":"working","task":null,"waiting_for":null},"phase":{"current":"done"},"progress":{"pct":100,"running":0,"done":3},"budget":[{"id":"base","cap":3,"granted":3,"used":2},{"id":"analyst_reserve","cap":1,"granted":1,"used":1},{"id":"escalation_reserve","cap":1,"granted":1,"used":1}],"agents":{"code-reviewer-t3":{"state":"done","note":"Báo leo thang: cần diễn tập migration","progress":1.0,"tag":"handoff","since":1760000062.0}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"done"},{"from":"main","to":"code-reviewer-t3","state":"done"},{"from":"code-reviewer-t3","to":"main","state":"active"}],"log":[{"t":1760000062.0,"kind":"done","agent":"code-reviewer-t3","text":"Báo leo thang: cần diễn tập migration"},{"t":1760000052.4,"kind":"start","agent":"code-reviewer-t3","text":"Đọc diff và chạy kiểm chứng độc lập"},{"t":1760000040.0,"kind":"done","agent":"architecture-critic","text":"2 mục high đã xử lý, 0 critical"},{"t":1760000029.4,"kind":"start","agent":"architecture-critic","text":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng"},{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [62.1,{"agents":{"code-reviewer-t3":{"tokens":44800.0,"duration_ms":9600.0}}}],
+   [62.5,{"boss":{"state":"waiting","task":"Diễn tập migration và đăng nhập lại trên 2 client","waiting_for":"test-engineer"},"phase":{"current":"verify"},"progress":{"pct":75,"agents":4,"total":4,"running":1},"agents":{"test-engineer":{"state":"working","task":"Diễn tập migration và đăng nhập lại trên 2 client","progress":0.0,"tag":"received","since":1760000062.5,"runs":1,"turns":{"used":0,"max":12}}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"done"},{"from":"main","to":"code-reviewer-t3","state":"done"},{"from":"code-reviewer-t3","to":"main","state":"active"},{"from":"main","to":"test-engineer","state":"active"}],"log":[{"t":1760000062.5,"kind":"start","agent":"test-engineer","text":"Diễn tập migration và đăng nhập lại trên 2 client"},{"t":1760000062.0,"kind":"done","agent":"code-reviewer-t3","text":"Báo leo thang: cần diễn tập migration"},{"t":1760000052.4,"kind":"start","agent":"code-reviewer-t3","text":"Đọc diff và chạy kiểm chứng độc lập"},{"t":1760000040.0,"kind":"done","agent":"architecture-critic","text":"2 mục high đã xử lý, 0 critical"},{"t":1760000029.4,"kind":"start","agent":"architecture-critic","text":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng"},{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [62.9,{"agents":{"test-engineer":{"since":1760000062.9}},"log":[{"t":1760000062.9,"kind":"start","agent":"test-engineer","text":"Diễn tập migration và đăng nhập lại trên 2 client"},{"t":1760000062.0,"kind":"done","agent":"code-reviewer-t3","text":"Báo leo thang: cần diễn tập migration"},{"t":1760000052.4,"kind":"start","agent":"code-reviewer-t3","text":"Đọc diff và chạy kiểm chứng độc lập"},{"t":1760000040.0,"kind":"done","agent":"architecture-critic","text":"2 mục high đã xử lý, 0 critical"},{"t":1760000029.4,"kind":"start","agent":"architecture-critic","text":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng"},{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [63.7,{"progress":{"pct":77},"agents":{"test-engineer":{"progress":0.08333333333333333,"turns":{"used":1}}}}],
+   [64.7,{"progress":{"pct":79},"agents":{"test-engineer":{"progress":0.16666666666666666,"turns":{"used":2}}}}],
+   [65.7,{"progress":{"pct":81},"agents":{"test-engineer":{"progress":0.25,"turns":{"used":3}}}}],
+   [66.0,{"agents":{"code-reviewer-t3":{"tag":null}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"done"},{"from":"main","to":"code-reviewer-t3","state":"done"},{"from":"main","to":"test-engineer","state":"active"}]}],
+   [66.7,{"progress":{"pct":83},"agents":{"test-engineer":{"progress":0.3333333333333333,"turns":{"used":4}}}}],
+   [66.9,{"agents":{"test-engineer":{"tag":null}}}],
+   [67.7,{"progress":{"pct":85},"agents":{"test-engineer":{"progress":0.4166666666666667,"turns":{"used":5}}}}],
+   [68.8,{"progress":{"pct":88},"agents":{"test-engineer":{"progress":0.5,"turns":{"used":6}}}}],
+   [69.8,{"progress":{"pct":90},"agents":{"test-engineer":{"progress":0.5833333333333334,"turns":{"used":7}}}}],
+   [70.8,{"progress":{"pct":92},"agents":{"test-engineer":{"progress":0.6666666666666666,"turns":{"used":8}}}}],
+   [72.0,{"boss":{"state":"working","task":null,"waiting_for":null},"phase":{"current":"done"},"progress":{"pct":100,"running":0,"done":4},"agents":{"test-engineer":{"state":"done","note":"Rollback chạy được, 0 phiên bị mất","progress":1.0,"tag":"handoff","since":1760000072.0}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"done"},{"from":"main","to":"code-reviewer-t3","state":"done"},{"from":"main","to":"test-engineer","state":"done"},{"from":"test-engineer","to":"main","state":"active"}],"log":[{"t":1760000072.0,"kind":"done","agent":"test-engineer","text":"Rollback chạy được, 0 phiên bị mất"},{"t":1760000062.9,"kind":"start","agent":"test-engineer","text":"Diễn tập migration và đăng nhập lại trên 2 client"},{"t":1760000062.0,"kind":"done","agent":"code-reviewer-t3","text":"Báo leo thang: cần diễn tập migration"},{"t":1760000052.4,"kind":"start","agent":"code-reviewer-t3","text":"Đọc diff và chạy kiểm chứng độc lập"},{"t":1760000040.0,"kind":"done","agent":"architecture-critic","text":"2 mục high đã xử lý, 0 critical"},{"t":1760000029.4,"kind":"start","agent":"architecture-critic","text":"Phản biện thiết kế: tìm ràng buộc ẩn và lỗ hổng"},{"t":1760000017.0,"kind":"done","agent":"requirement-analyst","text":"3 giả định đã chốt, 1 câu hỏi cho người"},{"t":1760000006.4,"kind":"start","agent":"requirement-analyst","text":"Làm rõ: giữ mật khẩu cũ không? Thời hạn phiên bao lâu?"}]}],
+   [72.1,{"agents":{"test-engineer":{"tokens":27100.0,"duration_ms":9100.0}}}],
+   [76.0,{"agents":{"test-engineer":{"tag":null}},"edges":[{"from":"main","to":"requirement-analyst","state":"done"},{"from":"main","to":"architecture-critic","state":"done"},{"from":"main","to":"code-reviewer-t3","state":"done"},{"from":"main","to":"test-engineer","state":"done"}]}],
+   [107.0,{"boss":{"state":"done"}}]
+  ]},
+ "team":{"start":1760000000.0,"end":1760000084.0,
+  "base":{"version":1,"mode":"team","empty":false,"hints":[],"feature":"F12","features":["F12"],"requirement":{"id":"F12","tier":null,"lane":"team","strategy":"team_pipeline","required":[],"base":"main"},"boss":{"id":"main","kind":"script","state":"waiting","task":null,"waiting_for":"claude-spec"},"phase":{"steps":["spec","tester","coder","review","pack","audit"],"current":"spec"},"progress":{"pct":0,"agents":7,"total":6,"running":0,"done":0,"blocked":0},"budget":null,"lanes":[{"id":"claude","color":"aqua","agents":["claude-spec","claude-audit"]},{"id":"build","color":"orange","agents":["tester","coder"]},{"id":"review","color":"violet","agents":["reviewer"]},{"id":"scripts","color":"slate","agents":["gates","pack"]}],"agents":{"claude-spec":{"id":"claude-spec","state":"waiting","task":null,"note":"awaiting_spec","progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":null,"effort":null,"tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"tester":{"id":"tester","state":"waiting","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":null,"effort":null,"tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"coder":{"id":"coder","state":"waiting","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":null,"effort":null,"tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"reviewer":{"id":"reviewer","state":"waiting","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":null,"effort":null,"tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"pack":{"id":"pack","state":"waiting","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":null,"effort":null,"tokens":null,"duration_ms":null,"stalled":false,"kind":"script"},"claude-audit":{"id":"claude-audit","state":"waiting","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":null,"effort":null,"tokens":null,"duration_ms":null,"stalled":false,"kind":"robot"},"gates":{"id":"gates","state":"waiting","task":null,"note":null,"progress":null,"tag":null,"since":null,"runs":0,"turns":null,"model":null,"effort":null,"tokens":null,"duration_ms":null,"stalled":false,"kind":"script"}},"edges":[{"from":"claude-spec","to":"main","state":"active"},{"from":"main","to":"tester","state":"planned"},{"from":"main","to":"coder","state":"planned"},{"from":"main","to":"reviewer","state":"planned"},{"from":"main","to":"pack","state":"planned"},{"from":"coder","to":"gates","state":"planned"},{"from":"pack","to":"claude-audit","state":"planned"}],"log":[],"warnings":[]},
+  "steps":[
+   [9.0,{"boss":{"waiting_for":"tester"},"phase":{"current":"tester"},"progress":{"pct":25,"running":1,"done":1},"agents":{"claude-spec":{"state":"done","note":null,"progress":1.0},"tester":{"state":"working","since":1760000009.0}},"edges":[{"from":"claude-spec","to":"main","state":"done"},{"from":"main","to":"tester","state":"active"},{"from":"main","to":"coder","state":"planned"},{"from":"main","to":"reviewer","state":"planned"},{"from":"main","to":"pack","state":"planned"},{"from":"coder","to":"gates","state":"planned"},{"from":"pack","to":"claude-audit","state":"planned"}],"log":[{"t":1760000009.0,"kind":"start","agent":"tester","text":null},{"t":1760000008.0,"kind":"done","agent":"claude-spec","text":null}]}],
+   [21.0,{"boss":{"waiting_for":"coder"},"phase":{"current":"coder"},"progress":{"pct":42,"done":2},"agents":{"tester":{"state":"done","progress":1.0,"since":null,"model":"sample/free-a"},"coder":{"state":"working","since":1760000021.0}},"edges":[{"from":"claude-spec","to":"main","state":"done"},{"from":"main","to":"tester","state":"done"},{"from":"main","to":"coder","state":"active"},{"from":"main","to":"reviewer","state":"planned"},{"from":"main","to":"pack","state":"planned"},{"from":"coder","to":"gates","state":"planned"},{"from":"pack","to":"claude-audit","state":"planned"}],"log":[{"t":1760000021.0,"kind":"start","agent":"coder","text":null},{"t":1760000008.0,"kind":"done","agent":"claude-spec","text":null}]}],
+   [35.0,{"progress":{"blocked":1},"agents":{"coder":{"since":1760000035.0},"gates":{"state":"blocked","note":"FAIL 9/12","progress":0.75}},"edges":[{"from":"claude-spec","to":"main","state":"done"},{"from":"main","to":"tester","state":"done"},{"from":"main","to":"coder","state":"active"},{"from":"main","to":"reviewer","state":"planned"},{"from":"main","to":"pack","state":"planned"},{"from":"coder","to":"gates","state":"planned"},{"from":"gates","to":"coder","state":"active"},{"from":"pack","to":"claude-audit","state":"planned"}],"log":[{"t":1760000035.0,"kind":"start","agent":"coder","text":null},{"t":1760000034.0,"kind":"fail","agent":"gates","text":"FAIL 9/12"},{"t":1760000008.0,"kind":"done","agent":"claude-spec","text":null}]}],
+   [50.0,{"boss":{"waiting_for":"reviewer"},"phase":{"current":"review"},"progress":{"pct":58,"done":3,"blocked":0},"agents":{"coder":{"state":"done","progress":1.0,"since":null,"model":"sample/free-d"},"reviewer":{"state":"reviewing","since":1760000050.0},"gates":{"state":"done","note":"PASS 12/12","progress":1.0}},"edges":[{"from":"claude-spec","to":"main","state":"done"},{"from":"main","to":"tester","state":"done"},{"from":"main","to":"coder","state":"done"},{"from":"main","to":"reviewer","state":"active"},{"from":"main","to":"pack","state":"planned"},{"from":"coder","to":"gates","state":"done"},{"from":"pack","to":"claude-audit","state":"planned"}],"log":[{"t":1760000050.0,"kind":"start","agent":"reviewer","text":null},{"t":1760000049.0,"kind":"done","agent":"gates","text":"PASS 12/12"},{"t":1760000008.0,"kind":"done","agent":"claude-spec","text":null}]}],
+   [63.0,{"boss":{"waiting_for":"pack"},"phase":{"current":"pack"},"progress":{"pct":75,"done":4},"agents":{"reviewer":{"state":"done","progress":1.0,"since":null,"model":"sample/free-c"},"pack":{"state":"working","since":1760000063.0}},"edges":[{"from":"claude-spec","to":"main","state":"done"},{"from":"main","to":"tester","state":"done"},{"from":"main","to":"coder","state":"done"},{"from":"main","to":"reviewer","state":"done"},{"from":"main","to":"pack","state":"active"},{"from":"coder","to":"gates","state":"done"},{"from":"pack","to":"claude-audit","state":"planned"}],"log":[{"t":1760000063.0,"kind":"start","agent":"pack","text":null},{"t":1760000063.0,"kind":"warn","agent":"main","text":"pre-review blockers were addressed by a fix commit that was not re-reviewed"},{"t":1760000062.0,"kind":"done","agent":"reviewer","text":null},{"t":1760000049.0,"kind":"done","agent":"gates","text":"PASS 12/12"},{"t":1760000008.0,"kind":"done","agent":"claude-spec","text":null}],"warnings":["pre-review blockers were addressed by a fix commit that was not re-reviewed"]}],
+   [73.0,{"boss":{"waiting_for":"claude-audit"},"phase":{"current":"audit"},"progress":{"pct":83,"running":0,"done":5},"agents":{"pack":{"state":"done","progress":1.0,"since":null},"claude-audit":{"note":"awaiting_audit"}},"edges":[{"from":"claude-spec","to":"main","state":"done"},{"from":"main","to":"tester","state":"done"},{"from":"main","to":"coder","state":"done"},{"from":"main","to":"reviewer","state":"done"},{"from":"main","to":"pack","state":"done"},{"from":"coder","to":"gates","state":"done"},{"from":"pack","to":"claude-audit","state":"planned"}],"log":[{"t":1760000073.0,"kind":"warn","agent":"main","text":"pre-review blockers were addressed by a fix commit that was not re-reviewed"},{"t":1760000072.0,"kind":"done","agent":"pack","text":null},{"t":1760000062.0,"kind":"done","agent":"reviewer","text":null},{"t":1760000049.0,"kind":"done","agent":"gates","text":"PASS 12/12"},{"t":1760000008.0,"kind":"done","agent":"claude-spec","text":null}]}],
+   [84.0,{"boss":{"state":"done","waiting_for":null},"phase":{"current":"done"},"progress":{"pct":100,"done":6},"agents":{"claude-audit":{"state":"done","note":"APPROVE","progress":1.0}},"edges":[{"from":"claude-spec","to":"main","state":"done"},{"from":"main","to":"tester","state":"done"},{"from":"main","to":"coder","state":"done"},{"from":"main","to":"reviewer","state":"done"},{"from":"main","to":"pack","state":"done"},{"from":"coder","to":"gates","state":"done"},{"from":"pack","to":"claude-audit","state":"done"}],"log":[{"t":1760000084.0,"kind":"warn","agent":"main","text":"pre-review blockers were addressed by a fix commit that was not re-reviewed"},{"t":1760000083.0,"kind":"done","agent":"claude-audit","text":"APPROVE"},{"t":1760000072.0,"kind":"done","agent":"pack","text":null},{"t":1760000062.0,"kind":"done","agent":"reviewer","text":null},{"t":1760000049.0,"kind":"done","agent":"gates","text":"PASS 12/12"},{"t":1760000008.0,"kind":"done","agent":"claude-spec","text":null}]}]
+  ]}
+}}
+</script>
 <script>
 (() => {
 "use strict";
@@ -472,6 +705,7 @@ if (window.top !== window.self) {
   throw new Error("framed");
 }
 const DEMO = JSON.parse(document.getElementById("board-demo").textContent);
+const OFFICE_SAMPLE = JSON.parse(document.getElementById("office-sample").textContent);          // the sample runs of the Office tab (scripts/office_sample.py)
 // github.io serves every site of an owner from ONE origin, so a sibling site's script can open this page and read the token field. Take no token there.
 const SHARED_ORIGIN = /^https?:\/\/[^/]*\.github\.io\.?(:\d+)?$/i.test(window.origin);
 const API = "https://api.github.com";
@@ -1110,28 +1344,117 @@ function summarize(models, nowMs) {
 }
 
 // ---- a snapshot of the agent office (claude-agent-routing-template, scripts/office/snapshot.py), read as untrusted data ----
+// Both views of the office are read: `claude` (the subagents of a Claude Code session) and `team` (one feature of the VPS pipeline, team.py).
+const OFFICE_MODES = ["claude", "team"], OFFICE_COLORS = ["aqua", "orange", "violet", "magenta", "yellow", "slate"], OFFICE_TAGS = ["received", "handoff", "error"], OFFICE_EDGES = ["planned", "active", "done"];
 function readOffice(snap) {
   if (!snap || typeof snap !== "object" || Array.isArray(snap)) return { ok: false, error: "File không phải snapshot của Office." };
   if (snap.version !== 1) return { ok: false, error: "Snapshot của Office phải là version 1 (file này: " + clip(snap.version, 12) + ")." };
-  if (snap.mode !== "claude") return { ok: false, error: "Chỉ đọc snapshot mode=claude (file này: " + clip(snap.mode, 12) + ")." };
+  if (!OFFICE_MODES.includes(snap.mode)) return { ok: false, error: "Chỉ đọc snapshot mode=claude hoặc mode=team (file này: " + clip(snap.mode, 12) + ")." };
   const state = (s) => (Object.prototype.hasOwnProperty.call(OFFICE_STATES, s) ? s : "idle");
+  const list = (x, n) => (Array.isArray(x) ? x.slice(0, n) : []);
   const req = snap.requirement && typeof snap.requirement === "object" ? snap.requirement : null;
   const boss = snap.boss && typeof snap.boss === "object" ? snap.boss : null;
   const phase = snap.phase && Array.isArray(snap.phase.steps) ? snap.phase : null;
   const prog = snap.progress && typeof snap.progress === "object" ? snap.progress : null;
   const agents = snap.agents && typeof snap.agents === "object" ? Object.values(snap.agents) : [];
+  const span = snap.span && typeof snap.span === "object" && finite(snap.span.start) !== null && finite(snap.span.end) !== null && snap.span.end >= snap.span.start ? snap.span : null;
+  const turns = (t) => (t && typeof t === "object" ? { used: whole(t.used), max: whole(t.max) || null } : null);
   return {
-    ok: true, mode: "claude", atMs: finite(snap.now) === null ? null : snap.now * 1000, live: snap.live === true,
+    ok: true, mode: snap.mode, atMs: finite(snap.now) === null ? null : snap.now * 1000, live: snap.live === true,
+    span: span ? { start: span.start * 1000, end: span.end * 1000 } : null, empty: snap.empty === true, feature: clip(snap.feature, 40),
+    hints: list(snap.hints, 6).map((x) => clip(x, 30)), warnings: list(snap.warnings, 5).map((x) => clip(x, 200)),
     requirement: req ? { id: clip(req.id, 40), tier: clip(req.tier, 4), lane: clip(req.lane, 20), strategy: clip(req.strategy, 60) } : null,
-    boss: boss ? { state: state(boss.state), task: clip(boss.task, 160), waitingFor: clip(boss.waiting_for, 60) } : null,
+    boss: boss ? { state: state(boss.state), task: clip(boss.task, 160), waitingFor: clip(boss.waiting_for, 60), kind: boss.kind === "script" ? "script" : "robot" } : null,
     phase: phase ? { steps: phase.steps.slice(0, 8).map((s) => clip(s, 20)), current: clip(phase.current, 20) } : null,
-    progress: prog ? { pct: Math.max(0, Math.min(100, finite(prog.pct) || 0)), agents: whole(prog.agents), total: whole(prog.total), running: whole(prog.running), done: whole(prog.done), blocked: whole(prog.blocked) } : null,
-    budget: (Array.isArray(snap.budget) ? snap.budget : []).slice(0, 8).map((b) => ({ id: clip(b && b.id, 30), cap: whole(b && b.cap), granted: whole(b && b.granted), used: whole(b && b.used) })),
+    progress: prog ? { pct: Math.max(0, Math.min(100, finite(prog.pct) || 0)), known: finite(prog.pct) !== null, agents: whole(prog.agents), total: whole(prog.total), running: whole(prog.running), done: whole(prog.done), blocked: whole(prog.blocked) } : null,
+    ledger: Array.isArray(snap.budget),
+    budget: list(snap.budget, 8).map((b) => ({ id: clip(b && b.id, 30), cap: whole(b && b.cap), granted: whole(b && b.granted), used: whole(b && b.used) })),
+    lanes: list(snap.lanes, 8).map((l) => ({ id: clip(l && l.id, 30), color: OFFICE_COLORS.includes(l && l.color) ? l.color : "slate", agents: list(l && l.agents, 40).map((x) => clip(x, 60)) })),
     agents: agents.slice(0, 40).map((a) => ({ id: clip(a && a.id, 60), state: state(a && a.state), task: clip(a && a.task, 160), note: clip(a && a.note, 160),
                                            progress: finite(a && a.progress) === null ? null : Math.max(0, Math.min(1, a.progress)), model: clip(a && a.model, 40),
-                                           tokens: finite(a && a.tokens), stalled: !!(a && a.stalled) })),
-    log: (Array.isArray(snap.log) ? snap.log : []).slice(0, 8).map((e) => ({ t: finite(e && e.t) === null ? null : e.t * 1000, kind: clip(e && e.kind, 12), agent: clip(e && e.agent, 60), text: clip(e && e.text, 160) })),
+                                           tokens: finite(a && a.tokens), stalled: !!(a && a.stalled), tag: OFFICE_TAGS.includes(a && a.tag) ? a.tag : null,
+                                           turns: turns(a && a.turns), effort: clip(a && a.effort, 20), kind: a && a.kind === "script" ? "script" : "robot" })),
+    edges: list(snap.edges, 60).map((e) => ({ from: clip(e && e.from, 60), to: clip(e && e.to, 60), state: OFFICE_EDGES.includes(e && e.state) ? e.state : "planned" })),
+    log: list(snap.log, 8).map((e) => ({ t: finite(e && e.t) === null ? null : e.t * 1000, kind: clip(e && e.kind, 12), agent: clip(e && e.agent, 60), text: clip(e && e.text, 160) })),
   };
+}
+
+// ---- the Office tab: the words it uses, and the sample runs replayed from a recording ----
+const OFFICE_LOOK = { idle: ["Rảnh", "neutral"], waiting: ["Đang chờ", "neutral"], working: ["Đang làm", "info"], reviewing: ["Đang soát", "warning"], done: ["Xong", "success"], blocked: ["Bị chặn", "failed"] };
+const OFFICE_ROLE = { "requirement-analyst": ["Làm rõ yêu cầu", "Chưa có việc"], "architecture-critic": ["Phản biện thiết kế", "Chưa có việc"], architect: ["Thiết kế kiến trúc", "Không kích hoạt ở tầng này"],
+                      implementer: ["Viết code", "Chỉ dùng khi leo thang"], "code-reviewer": ["Soát diff và kiểm chứng", "Chưa có việc"], "code-reviewer-t3": ["Soát diff và kiểm chứng", "Chưa có việc"],
+                      "code-reviewer-verify": ["Người soát thay thế khi nặng kiểm chứng", "Chỉ khi soát nặng kiểm chứng"], "test-engineer": ["Thiết kế kiểm chứng", "Dự phòng, chờ người soát leo thang"],
+                      "claude-spec": ["Viết spec.md, tasks.md", "Chưa có việc"], "claude-audit": ["Kiểm toán, ra verdict.md", "Chưa có việc"], tester: ["Viết test chấp nhận", "Chưa có việc"],
+                      coder: ["Viết code đến khi gates xanh", "Chưa có việc"], reviewer: ["Soát trước, repo chỉ đọc", "Chưa có việc"], gates: ["Chạy test trong checkout sạch", "Chưa có việc"], pack: ["Gói audit-pack.md", "Chưa có việc"] };
+const OFFICE_NAME = { "claude-spec": "Claude · spec", "claude-audit": "Claude · audit" };
+const OFFICE_BOSS = { claude: ["Main session", "Điều phối, thiết kế, viết code"], team: ["team.py", "Script điều phối, không phải model"] };
+const OFFICE_LANE = { requirements: "Yêu cầu", architecture: "Kiến trúc", delivery: "Triển khai", verification: "Kiểm chứng", other: "Khác",
+                      claude: "Claude · bạn tự chạy", build: "Viết test và code", review: "Soát", scripts: "Cổng tự động · script" };
+const OFFICE_PHASE = { analysis: "Phân tích", design: "Thiết kế", implement: "Triển khai", verify: "Kiểm chứng", spec: "Spec", tester: "Test", coder: "Code", review: "Soát", pack: "Đóng gói", audit: "Kiểm toán" };
+const OFFICE_SLOT = { base: "Cơ sở", analyst_reserve: "Dự phòng phân tích", escalation_reserve: "Dự phòng kiểm chứng" };
+const OFFICE_LOG = { start: ["→", "nhận việc", "info"], done: ["✓", "xong", "success"], fail: ["✕", "lỗi", "failed"], warn: ["!", "cảnh báo", "warning"] };
+const OFFICE_TAG_WORD = { received: "nhận việc", handoff: "bàn giao", error: "lỗi" };
+const own = (table, key) => (Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null);
+
+function officeName(id, mode) { return id === "main" ? OFFICE_BOSS[mode === "team" ? "team" : "claude"][0] : own(OFFICE_NAME, id) || id; }
+function officeRole(id) { const r = own(OFFICE_ROLE, id); return r ? r[0] : "Agent khác"; }
+// What a card says about the agent now: its task while it works, its answer once done, why when it is stuck.
+function officeDescribe(a) {
+  switch (a.state) {
+    case "working": case "reviewing": return a.task || "Đang làm việc";
+    case "blocked": return a.stalled ? "Im lặng quá lâu hoặc chưa bao giờ bắt đầu" : a.note || a.task || "Đang bị chặn";
+    case "done": return a.note || a.task || "Đã xong";
+    case "waiting": return a.note === "awaiting_spec" ? "Chờ bạn viết spec bằng Claude Code." : a.note === "awaiting_audit" ? "Chờ bạn chạy kiểm toán bằng Claude Code." : "Chưa đến lượt";
+    default: { const r = own(OFFICE_ROLE, a.id); return r ? r[1] : "Chưa có việc"; }
+  }
+}
+function officeMeta(a) { return [a.model, a.effort, a.turns ? a.turns.used + (a.turns.max ? "/" + a.turns.max : "") + " lượt" : ""].filter(Boolean).join(" · "); }
+function officeBossLine(view) {
+  const b = view.boss;
+  if (!b) return "Đang rảnh";
+  if (b.waitingFor) return "Chờ " + officeName(b.waitingFor, view.mode) + (b.task ? ": " + b.task : "");
+  return { idle: "Đang rảnh", waiting: "Đang chờ", working: "Đang làm việc", reviewing: "Đang soát", done: "Hoàn tất: mọi việc đã xong.", blocked: "Đang bị chặn, cần người xem." }[b.state];
+}
+function officePhases(view) {
+  if (!view.phase) return [];
+  const steps = view.phase.steps, at = view.phase.current === "done" ? steps.length : steps.indexOf(view.phase.current);
+  return steps.map((s, i) => ({ step: s, label: own(OFFICE_PHASE, s) || s, status: i < at ? "past" : i === at ? "now" : "next" }));
+}
+// The departments with their cards in the order the snapshot gives; an agent no department names gets one more, "Khác", so nothing it reports is dropped.
+function officeLanes(view) {
+  const byId = new Map(view.agents.map((a) => [a.id, a])), placed = new Set(), out = [];
+  for (const l of view.lanes) {
+    const agents = l.agents.filter((id) => byId.has(id) && !placed.has(id)).map((id) => (placed.add(id), byId.get(id)));
+    if (agents.length) out.push({ id: l.id, color: l.color, label: own(OFFICE_LANE, l.id) || l.id, agents });
+  }
+  const rest = view.agents.filter((a) => !placed.has(a.id));
+  if (rest.length) out.push({ id: "other", color: "slate", label: OFFICE_LANE.other, agents: rest });
+  return out;
+}
+function mmss(sec) { const s = Math.max(0, Math.floor(sec)); return pad2(Math.floor(s / 60)) + ":" + pad2(s % 60); }
+// A line between two cards, from their boxes (relative to the floor): leave the bottom of the upper one for the top of the lower one, or side to side on one row.
+function officeEdge(a, b) {
+  const ax = a.x + a.w / 2, ay = a.y + a.h / 2, bx = b.x + b.w / 2, by = b.y + b.h / 2, slack = 6;
+  let p0, p1, vertical = true;
+  if (b.y >= a.y + a.h - slack) { p0 = [ax, a.y + a.h]; p1 = [bx, b.y]; }
+  else if (a.y >= b.y + b.h - slack) { p0 = [ax, a.y]; p1 = [bx, b.y + b.h]; }
+  else { vertical = false; [p0, p1] = bx > ax ? [[a.x + a.w, ay], [b.x, by]] : [[a.x, ay], [b.x + b.w, by]]; }
+  const n = (x) => x.toFixed(1), mx = (p0[0] + p1[0]) / 2, my = (p0[1] + p1[1]) / 2;
+  const c = vertical ? [p0[0], my, p1[0], my] : [mx, p0[1], mx, p1[1]];
+  return { d: "M" + n(p0[0]) + " " + n(p0[1]) + " C" + c.map(n).join(" ") + " " + n(p1[0]) + " " + n(p1[1]), end: p1 };
+}
+// The recording (scripts/office_sample.py): a run's first snapshot, then only what changed at each moment. Objects merge key by key; anything else replaces.
+function officeMerge(into, patch) {
+  if (!into || !patch || typeof into !== "object" || typeof patch !== "object" || Array.isArray(into) || Array.isArray(patch)) return patch;
+  const out = Object.assign({}, into);
+  for (const [k, v] of Object.entries(patch)) if (k !== "__proto__") out[k] = officeMerge(into[k], v);
+  return out;
+}
+// The snapshot of a sample run `sec` seconds after its start, as the template's own code made it (the page then reads it like a file).
+function officeAt(run, sec) {
+  let snap = run.base;
+  for (const [t, patch] of run.steps) { if (t > sec) break; snap = officeMerge(snap, patch); }
+  return Object.assign({}, snap, { now: run.start + sec, live: false, span: { start: run.start, end: run.end } });
 }
 
 // ---- the demo office ----
@@ -1412,7 +1735,7 @@ function buildDemo(spec, nowMs) {
 const $ = (id) => document.getElementById(id);
 const state = { repos: [], models: new Map(), demo: false, saved: null, office: null, realOffice: null, rate: null, interval: 60, open: new Set(), jobsCache: new Map(),
                 loadingJobs: new Set(), etags: new Map(), files: new Map(), epoch: new Map(), unlinks: new Map(), loading: new Map(), tokenEditing: false, refreshing: false, again: false, timer: null, pickList: [], gen: 0, pickSeq: 0, cool: { until: 0, hits: 0 }, refused: 0,
-                view: "home", theme: "neon", mode: "auto", group: "flow", filter: { repo: "", status: "", q: "", rest: "collapse" }, focus: null, chain: null, boardEdges: [], rowOpen: new Map(), calls: 0 };
+                view: "home", theme: "neon", mode: "auto", group: "flow", filter: { repo: "", status: "", q: "", rest: "collapse" }, focus: null, chain: null, boardEdges: [], rowOpen: new Map(), ofc: { mode: "claude", source: "sample", files: { claude: null, team: null }, pos: { claude: null, team: null }, playing: true, speed: 2, raf: 0, last: 0, hold: 0, painted: 0, layout: "", nodes: null }, calls: 0 };
 const keyOf = (repo) => repo.toLowerCase();
 
 function h(tag, attrs, ...kids) {
@@ -1636,7 +1959,7 @@ function jobsOf(model, run) {
 }
 
 // ---- drawing ----
-const VIEWS = ["home", "board", "repos", "schedule", "inbox", "agents", "health", "settings"];
+const VIEWS = ["home", "board", "repos", "schedule", "inbox", "agents", "office", "health", "settings"];
 const SVG_NS = "http://www.w3.org/2000/svg";
 const STATE_WORD = { done: "xong", running: "đang chạy", waiting: "chờ bạn", failed: "lỗi", queued: "chưa bắt đầu", skipped: "bỏ qua", cancelled: "đã hủy" };
 
@@ -1940,6 +2263,7 @@ function render() {
       case "schedule": renderWeek(all); break;
       case "inbox": renderInbox(all); break;
       case "agents": renderAgents(all); break;
+      case "office": renderOffice(); break;
       case "health": renderHealth(all); break;
       default: break;
     }
@@ -2014,6 +2338,263 @@ function renderAgents(all) {
         a.when ? h("span", { class: "small muted", text: ago((Date.now() - a.when) / 1000) }) : null))) : h("p", { class: "small muted", text: "Chưa thấy hoạt động nào nhận ra là của agent." })));
   }
   $("agents-body").replaceChildren(...(parts.length ? parts : [h("p", { class: "empty", text: "Chưa có repo nào đọc được." })]));
+}
+
+// ---- Office: the agent office, drawn as claude-agent-routing-template draws it (main session on top, departments below, a robot per agent) ----
+// The floor is built once per set of departments and cards; each moment only changes words and attributes, so the robots keep moving and a
+// replay does not rebuild the page five times a second.
+const SAMPLE_START = 0.4, SAMPLE_HOLD_MS = 2500, PAINT_MS = 200;
+const BOT = [
+  ["rect", { class: "desk", x: 4, y: 68, width: 112, height: 6, rx: 3 }],
+  ["g", {}, [["rect", { class: "m-body", x: 68, y: 24, width: 42, height: 32, rx: 5 }], ["rect", { class: "m-line l1", x: 74, y: 31, width: 26, height: 3, rx: 1.5 }],
+             ["rect", { class: "m-line l2", x: 74, y: 38, width: 20, height: 3, rx: 1.5 }], ["rect", { class: "m-line l3", x: 74, y: 45, width: 30, height: 3, rx: 1.5 }],
+             ["rect", { class: "m-stand", x: 85, y: 56, width: 8, height: 8 }], ["rect", { class: "m-base", x: 78, y: 63, width: 22, height: 4, rx: 2 }]]],
+  ["g", { class: "kb" }, [["rect", { x: 52, y: 64, width: 22, height: 4, rx: 2 }]]],
+  ["g", { class: "rb" }, [["line", { class: "ant", x1: 34, y1: 9, x2: 34, y2: 16 }], ["circle", { class: "ball", cx: 34, cy: 7, r: 3.6 }],
+                          ["rect", { class: "body", x: 22, y: 44, width: 24, height: 20, rx: 7 }], ["path", { class: "arm", d: "M44 50 L58 62" }],
+                          ["rect", { class: "head", x: 17, y: 16, width: 34, height: 27, rx: 10 }], ["rect", { class: "plate", x: 21.5, y: 20.5, width: 25, height: 16.5, rx: 6.5 }],
+                          ["g", { class: "eyes e-open" }, [["circle", { cx: 29.5, cy: 28.7, r: 2.5 }], ["circle", { cx: 38.5, cy: 28.7, r: 2.5 }]]],
+                          ["g", { class: "eyes e-sleep" }, [["path", { d: "M27 29h5M36 29h5" }]]],
+                          ["g", { class: "eyes e-happy" }, [["path", { d: "M27 30q2.5-4 5 0M36 30q2.5-4 5 0" }]]],
+                          ["g", { class: "eyes e-x" }, [["path", { d: "M27.5 26.5l4 4m0-4l-4 4M36.5 26.5l4 4m0-4l-4 4" }]]]]],
+  ["g", { class: "bdg b-done" }, [["circle", { cx: 55, cy: 13, r: 7 }], ["path", { d: "M51.5 13l2.5 2.5 4-5" }]]],
+  ["g", { class: "bdg b-crit" }, [["circle", { cx: 55, cy: 13, r: 7 }], ["path", { d: "M55 9.5v4.5M55 16.8v.1" }]]],
+  ["text", { class: "zzz", x: 53, y: 14, text: "z" }]];
+const TERMINAL = [
+  ["rect", { class: "desk", x: 4, y: 68, width: 112, height: 6, rx: 3 }], ["rect", { class: "m-body", x: 20, y: 10, width: 80, height: 54, rx: 8 }],
+  ["circle", { class: "term-dot", cx: 30, cy: 19, r: 2.2 }], ["circle", { class: "term-dot", cx: 38, cy: 19, r: 2.2 }], ["circle", { class: "term-dot", cx: 46, cy: 19, r: 2.2 }],
+  ["path", { class: "chev", d: "M30 31l6 5-6 5" }], ["rect", { class: "m-line l1", x: 42, y: 34, width: 34, height: 3, rx: 1.5 }],
+  ["rect", { class: "m-line l2", x: 30, y: 46, width: 48, height: 3, rx: 1.5 }], ["rect", { class: "m-line l3", x: 30, y: 53, width: 26, height: 3, rx: 1.5 }],
+  ["rect", { class: "cursor", x: 60, y: 52, width: 6, height: 5 }],
+  ["g", { class: "bdg b-done" }, [["circle", { cx: 98, cy: 12, r: 7 }], ["path", { d: "M94.5 12l2.5 2.5 4-5" }]]],
+  ["g", { class: "bdg b-crit" }, [["circle", { cx: 98, cy: 12, r: 7 }], ["path", { d: "M98 8.5v4.5M98 15.8v.1" }]]],
+  ["text", { class: "zzz", x: 92, y: 22, text: "z" }]];
+
+function svgNode(tag, attrs, kids) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (k === "text") node.textContent = v; else node.setAttribute(k, String(v));
+  for (const kid of kids || []) node.append(kid);
+  return node;
+}
+function robot(kind) {
+  const draw = ([tag, attrs, kids]) => svgNode(tag, attrs, (kids || []).map(draw));
+  return svgNode("svg", { class: "bot", viewBox: "0 0 120 84", "aria-hidden": "true", focusable: "false" }, (kind === "script" ? TERMINAL : BOT).map(draw));
+}
+function put(node, text) { if (node.textContent !== text) node.textContent = text; }
+function mark(node, k, v) { if (node.getAttribute(k) !== v) node.setAttribute(k, v); }
+function officeChip(slot, st, stalled) {
+  const key = st + (stalled ? ":stalled" : "");
+  if (slot.dataset.key === key) return;
+  slot.dataset.key = key;
+  const [label, tone] = stalled ? ["Im lặng", "failed"] : OFFICE_LOOK[st];
+  slot.replaceChildren(badge({ tone, label, key: st === "working" ? "running" : "" }));
+}
+
+function officeSource() { return state.demo ? "sample" : state.ofc.source; }
+function officeRun() { return OFFICE_SAMPLE.runs ? own(OFFICE_SAMPLE.runs, state.ofc.mode) : null; }
+function officePos(run) {
+  const o = state.ofc;
+  if (o.pos[o.mode] === null) o.pos[o.mode] = Math.round((run.end - run.start) * SAMPLE_START * 10) / 10;           // a sample opens part-way in, with work already going
+  return o.pos[o.mode];
+}
+function officeNow() {
+  if (officeSource() === "file") return state.ofc.files[state.ofc.mode];
+  const run = officeRun();
+  return run ? readOffice(officeAt(run, officePos(run))) : null;
+}
+
+function officeBuild(view, lanes) {
+  const o = state.ofc, place = new Map(), cards = new Map();
+  const boss = { bot: robot(view.boss ? view.boss.kind : "robot"), chip: h("span"), tags: h("div", { class: "ofc-tags" }), req: h("p", { class: "ofc-req" }), line: h("p", { class: "ofc-line" }),
+                 bar: h("progress", { max: 100, value: 0, "aria-label": "Tiến độ chung" }), pct: h("b"), none: h("p", { class: "small muted", hidden: true, text: "Chỉ main session: không có subagent nào để đo." }),
+                 phase: h("ol", { class: "ofc-phase", "aria-label": "Giai đoạn của main session" }), stats: {}, budget: h("aside", { class: "ofc-budget" }) };
+  const [name, role] = OFFICE_BOSS[view.mode];
+  const statDefs = [["agents", "agent tham gia"], ["total", "tổng việc"], ["running", "đang chạy"], ["done", "hoàn thành"], ["blocked", "bị chặn"]];
+  boss.root = h("article", { class: "ofc-boss dept-yellow", "aria-label": name },
+    h("div", { class: "ofc-who" }, boss.bot, h("div", null, h("h3", { text: name }), h("p", { text: role })), boss.chip),
+    h("div", { class: "ofc-main" }, boss.tags, boss.req, boss.line, h("div", { class: "ofc-meter" }, boss.bar, boss.pct), boss.none, boss.phase,
+      h("dl", { class: "ofc-stats" }, statDefs.map(([k, word]) => { boss.stats[k] = h("dd", { text: "0" }); return h("div", null, h("dt", { text: word }), boss.stats[k]); }))),
+    boss.budget);
+  place.set("main", boss.root);
+  const laneNodes = lanes.map((l) => h("section", { class: "ofc-lane dept-" + l.color, "data-n": String(Math.min(l.agents.length, 4)), "aria-label": l.label },
+    h("header", null, h("i", { "aria-hidden": "true" }), h("h3", { text: l.label }), h("span", { text: l.agents.length + " agent" })),
+    h("div", { class: "ofc-cards" }, l.agents.map((a) => {
+      const c = { chip: h("span"), tag: h("span", { class: "ofc-tag", hidden: true }), bot: robot(a.kind), desc: h("p", { class: "desc" }),
+                  bar: h("progress", { max: 100, value: 0, "aria-label": "Tiến độ ước lượng của " + officeName(a.id, view.mode) }), pct: h("span"), meta: h("p", { class: "meta" }) };
+      c.root = h("article", { class: "ofc-card", "data-agent": a.id }, h("div", { class: "hd" }, c.chip, c.tag), c.bot,
+        h("h4", { text: officeName(a.id, view.mode) }), h("p", { class: "role", text: officeRole(a.id) }), c.desc, h("div", { class: "bar" }, c.bar, c.pct), c.meta);
+      cards.set(a.id, c); place.set(a.id, c.root);
+      return c.root;
+    }))));
+  const svg = svgNode("svg", { "aria-hidden": "true", focusable: "false" });
+  $("ofc-floor").replaceChildren(boss.root, h("div", { class: "ofc-lanes", role: "group", "aria-label": "Phòng ban" }, laneNodes), svg);
+  o.nodes = { boss, cards, place, svg, edges: new Map() };
+}
+
+function officePaint(view) {
+  const o = state.ofc, lanes = officeLanes(view);
+  const layout = view.mode + "|" + (view.boss ? view.boss.kind : "") + "|" + lanes.map((l) => l.id + ":" + l.color + ":" + l.agents.map((a) => a.id + "/" + a.kind).join(",")).join(";");
+  if (layout !== o.layout || !o.nodes) { officeBuild(view, lanes); o.layout = layout; }
+  const { boss, cards } = o.nodes, b = view.boss || { state: "idle", kind: "robot" }, p = view.progress, req = view.requirement;
+  mark(boss.root, "data-state", b.state); mark(boss.bot, "data-state", b.state); officeChip(boss.chip, b.state, false);
+  const tags = req ? [req.tier, req.strategy].filter(Boolean) : [];
+  if (boss.tags.dataset.key !== tags.join("|")) {
+    boss.tags.dataset.key = tags.join("|");
+    boss.tags.replaceChildren(...tags.map((t, i) => h("span", { class: i === 0 && /^T\d$/.test(t) ? "tier" : "", text: t })));
+  }
+  put(boss.req, req && req.id ? req.id : view.mode === "team" && view.feature ? view.feature : "Yêu cầu chưa đặt tên");
+  put(boss.line, officeBossLine(view));
+  const known = !!(p && p.known);
+  boss.bar.value = known ? p.pct : 0; mark(boss.bar, "aria-valuetext", known ? p.pct + "%" : "chưa đo được");
+  put(boss.pct, known ? p.pct + "%" : "—"); boss.none.hidden = known || !p;
+  const phases = officePhases(view), phaseKey = phases.map((x) => x.step + ":" + x.status).join(",");
+  if (boss.phase.dataset.key !== phaseKey) {
+    boss.phase.dataset.key = phaseKey;
+    boss.phase.replaceChildren(...phases.map((x) => h("li", { class: x.status, "aria-current": x.status === "now" ? "step" : false, text: x.label })));
+  }
+  for (const k of Object.keys(boss.stats)) put(boss.stats[k], String(p ? p[k] : 0));
+  const budgetKey = JSON.stringify([view.mode, view.ledger, view.budget]);
+  if (boss.budget.dataset.key !== budgetKey) { boss.budget.dataset.key = budgetKey; boss.budget.replaceChildren(...officeBudget(view)); }
+  for (const l of lanes) for (const a of l.agents) {
+    const c = cards.get(a.id), busy = a.state === "working" || a.state === "reviewing", pct = a.progress === null ? null : Math.floor(a.progress * 100);
+    mark(c.root, "data-state", a.state); mark(c.bot, "data-state", a.state); officeChip(c.chip, a.state, a.state === "blocked" && a.stalled);
+    c.tag.hidden = !a.tag; put(c.tag, a.tag ? OFFICE_TAG_WORD[a.tag] : "");
+    put(c.desc, officeDescribe(a));
+    c.bar.value = pct === null ? 0 : pct; mark(c.bar, "aria-valuetext", pct === null ? "chưa có" : (busy ? "khoảng " : "") + pct + "%");
+    put(c.pct, pct === null ? "—" : (busy ? "~" : "") + pct + "%");
+    put(c.meta, officeMeta(a));
+  }
+  officeEdges(view);
+  officeLog(view);
+}
+
+// Base and each reserve side by side, never one merged number (the repository's budget rule); a reserve not granted yet is drawn dashed.
+function officeBudget(view) {
+  const title = h("h4", { text: view.mode === "team" ? "Giới hạn pipeline" : "Ngân sách subagent" });
+  if (view.mode === "team" || !view.ledger) return [title, h("p", { text: view.mode === "team" ? "team.py chưa ghi số lượt thử của coder vào state.json nên chưa hiển thị được." : "Chưa ghi sổ ngân sách cho yêu cầu này." })];
+  const rows = view.budget.map((s) => h("div", { class: "ofc-slot" }, h("span", { text: own(OFFICE_SLOT, s.id) || s.id }),
+    h("span", { class: "ofc-pips", role: "img", "aria-label": s.used + "/" + s.cap + " đã dùng" + (s.granted < s.cap ? ", " + (s.cap - s.granted) + " chưa được cấp" : "") },
+      Array.from({ length: Math.min(s.cap, 12) }, (_, i) => h("i", { class: i < s.used ? "used" : i < s.granted ? "granted" : "" }))),
+    h("b", { text: s.used + "/" + s.cap })));
+  return [title, ...rows, view.budget.some((s) => s.granted < s.cap) ? h("p", { text: "Nét đứt: dự phòng chưa được cấp." }) : null,
+          h("p", { text: "Hook agent_budget.py từ chối lần spawn vượt trần. Cơ sở và dự phòng được báo riêng." })].filter(Boolean);
+}
+
+// The handoff lines: from the main session to each agent it handed work to. Measured from the cards as they are laid out, every paint, so a card that
+// grows or a narrower window moves them; a line keeps its element, so its flowing dash does not start over at each moment.
+function officeEdges(view) {
+  const n = state.ofc.nodes;
+  if (!n || $("view-office").hidden) return;
+  const floor = $("ofc-floor"), base = floor.getBoundingClientRect();
+  const box = (el) => { const r = el.getBoundingClientRect(); return { x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height }; };
+  mark(n.svg, "width", String(Math.ceil(floor.clientWidth))); mark(n.svg, "height", String(Math.ceil(floor.clientHeight)));
+  const wanted = view.edges.filter((e) => n.place.has(e.from) && n.place.has(e.to) && e.from !== e.to), keep = new Set();
+  for (const e of wanted) {
+    const key = e.from + "\u001f" + e.to, shape = officeEdge(box(n.place.get(e.from)), box(n.place.get(e.to)));
+    let g = n.edges.get(key);
+    if (!g) { g = svgNode("g", { class: "ofc-edge" }, [svgNode("path", {}), svgNode("circle", { r: 3.4 })]); n.edges.set(key, g); }
+    mark(g, "data-s", e.state); mark(g.firstChild, "d", shape.d); mark(g.lastChild, "cx", shape.end[0].toFixed(1)); mark(g.lastChild, "cy", shape.end[1].toFixed(1));
+    keep.add(key);
+  }
+  for (const [key, g] of n.edges) if (!keep.has(key)) { g.remove(); n.edges.delete(key); }
+  const order = [...keep].map((k) => n.edges.get(k)).sort((x, y) => (x.dataset.s === "active") - (y.dataset.s === "active"));          // the active line over the quiet ones
+  if (order.some((g, i) => n.svg.childNodes[i] !== g)) n.svg.replaceChildren(...order);
+}
+
+function officeLog(view) {
+  const sample = officeSource() === "sample", key = JSON.stringify([view.mode, sample, view.log]);
+  if ($("ofc-log").dataset.key === key) return;
+  $("ofc-log").dataset.key = key;
+  const when = (t) => t === null ? "" : sample && view.span ? mmss((t - view.span.start) / 1000) : new Date(t).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  $("ofc-log").replaceChildren(...(view.log.length ? view.log.map((e) => {
+    const look = own(OFFICE_LOG, e.kind);
+    return h("li", null, h("time", { datetime: e.t === null ? false : new Date(e.t).toISOString(), text: when(e.t) }), h("b", { text: officeName(e.agent, view.mode) }),
+      h("span", { class: "what" }, look ? h("span", { class: "k tone-" + look[2], text: look[0] + " " + look[1] }) : h("span", { class: "k", text: e.kind }), e.text ? " " + e.text : ""));
+  }) : [h("li", { class: "muted", text: "Chưa có sự kiện nào." })]));
+}
+
+// What the tab says when there is nothing to draw, or when the snapshot itself says something is missing. Never blank, never made up.
+function officeNotes(view) {
+  const o = state.ofc, notes = [];
+  const note = (title, body, cmds, action) => h("section", { class: "panel ofc-note", role: "status" }, h("h3", { text: title }), h("p", { class: "small muted", text: body }),
+    (cmds || []).map((c) => h("code", { class: "cmd", text: c })), action || null);
+  if (officeSource() === "file") {
+    if (!view) {
+      notes.push(note("Chưa nạp snapshot " + (o.mode === "team" ? "của pipeline VPS" : "của subagent Claude"),
+        "Trang này không có máy chủ: nó chỉ vẽ một snapshot bạn nạp, hoặc lượt chạy mẫu. Tạo file trên máy chạy agent rồi chọn nó ở mục “Nạp dữ liệu thật” bên dưới.",
+        [o.mode === "team" ? "python3 scripts/office/snapshot.py --mode team --team-home /srv/team > snapshot.json" : "python3 scripts/office/snapshot.py > snapshot.json"],
+        h("div", { class: "btns" }, h("button", { type: "button", class: "primary", "data-ofc": "sample", "data-focus-key": "ofc:sample", text: "Xem chạy mẫu" }), h("button", { type: "button", "data-ofc": "load", "data-focus-key": "ofc:load", text: "Chọn file…" }))));
+    } else {
+      const hints = new Set(view.hints);
+      if (hints.has("no_events") && hints.has("no_ledger")) notes.push(note("Chưa có dữ liệu thật", "Snapshot không có sự kiện nào và chưa ghi sổ ngân sách: bật hook rồi ghi sổ ngân sách cho yêu cầu đang làm.", ["cp .claude/settings.example.json .claude/settings.json"]));
+      else if (hints.has("no_events")) notes.push(note("Chưa thấy sự kiện nào", "Đã có sổ ngân sách nhưng hook chưa ghi sự kiện. Hook có đang bật không?", ["cp .claude/settings.example.json .claude/settings.json"]));
+      else if (hints.has("no_ledger")) notes.push(note("Chưa ghi sổ ngân sách", "Đã thấy sự kiện nhưng chưa biết yêu cầu thuộc tầng nào. Ghi sổ để thấy ngân sách và vai dự kiến.", ["python3 scripts/route.py --dimensions <six scores> --signals <signals> --record --requirement <id>"]));
+      if (hints.has("no_features")) notes.push(note("Không thấy feature nào của team.py", "Tạo snapshot trên máy có thư mục làm việc của team.py, hoặc chỉ đường dẫn bằng --team-home.", ["python3 scripts/office/snapshot.py --mode team --team-home /srv/team > snapshot.json"]));
+      for (const w of view.warnings) notes.push(note("Snapshot có cảnh báo", w));
+    }
+  }
+  $("ofc-notes").replaceChildren(...notes);
+  for (const b of $("ofc-notes").querySelectorAll("button[data-ofc]")) b.addEventListener("click", () => {
+    if (b.dataset.ofc === "sample") { state.ofc.source = "sample"; render(); } else { $("ofc-load").open = true; $("ofc-input").focus(); }
+  });
+}
+
+function officePlayer(view) {
+  const o = state.ofc, run = officeSource() === "sample" ? officeRun() : null;
+  $("ofc-controls").hidden = !run;
+  $("ofc-chip").classList.toggle("is-file", !run && !!view);
+  if (!run) {
+    const age = view && view.atMs !== null ? (Date.now() - view.atMs) / 1000 : null;
+    put($("ofc-chip"), !view ? "Chưa nạp snapshot" : "Snapshot" + (age === null ? "" : " · " + ago(age)) + (view.live && age > 300 ? " (đã cũ: nạp lại file mới)" : ""));
+    return;
+  }
+  const len = run.end - run.start, pos = officePos(run);
+  put($("ofc-chip"), "Chạy mẫu");
+  put($("ofc-play-glyph"), o.playing ? "❚❚" : "▶"); put($("ofc-play-word"), o.playing ? "Tạm dừng" : "Chạy");
+  for (const b of document.querySelectorAll("#ofc-controls [data-speed]")) mark(b, "aria-pressed", String(Number(b.dataset.speed) === o.speed));
+  mark($("ofc-pos"), "max", String(len));
+  if (Number($("ofc-pos").value) !== pos) $("ofc-pos").value = String(pos);
+  put($("ofc-time"), mmss(pos) + " / " + mmss(len)); mark($("ofc-pos"), "aria-valuetext", mmss(pos) + " trên " + mmss(len));
+}
+
+function renderOffice() {
+  const o = state.ofc, source = officeSource(), view = officeNow();
+  for (const [id, m] of [["ofc-claude", "claude"], ["ofc-team", "team"]]) mark($(id), "aria-pressed", String(o.mode === m));
+  for (const [id, s] of [["ofc-file", "file"], ["ofc-sample", "sample"]]) mark($(id), "aria-pressed", String(source === s));
+  $("ofc-file").disabled = state.demo;
+  $("ofc-file").title = state.demo ? "Đang xem dữ liệu mẫu: thoát ở Cài đặt để xem snapshot của bạn." : "";
+  officePlayer(view);
+  officeNotes(view);
+  $("ofc-foot").textContent = (source === "sample" ? "Số liệu của lượt chạy mẫu được ghi lại từ claude-agent-routing-template để xem hình dáng, không phải của yêu cầu thật; giờ trong nhật ký là thời gian kể từ đầu lượt chạy. " : "")
+    + (o.mode === "team" ? "Trạng thái từng vai đọc từ state.json của team.py và vài file bên cạnh (gates.log, verdict.md), không phải từ phiên của worker."
+                         : "Giai đoạn của main session được suy ra từ vai nào đang chạy, không quan sát trực tiếp. Tiến độ từng agent là ước lượng: số lần gọi công cụ trên số lượt tối đa.");
+  $("ofc-log").parentElement.hidden = !view;
+  if (!view) { $("ofc-floor").replaceChildren(); o.layout = ""; o.nodes = null; $("ofc-log").dataset.key = ""; }
+  else officePaint(view);
+  officeLoop();
+}
+
+// The replay clock: an animation frame while the tab shows a sample that plays; it stops by itself when the tab, the page or the sample is left.
+function officeTicking() { const o = state.ofc; return state.view === "office" && officeSource() === "sample" && o.playing && !document.hidden && !!officeRun(); }
+function officeLoop() { const o = state.ofc; if (officeTicking() && !o.raf) { o.last = 0; o.raf = requestAnimationFrame(officeFrame); } }
+function officeFrame(now) {
+  const o = state.ofc;
+  o.raf = 0;
+  if (!officeTicking()) return;
+  const run = officeRun(), len = run.end - run.start;
+  if (o.hold) { if (now >= o.hold) { o.hold = 0; o.pos[o.mode] = 0; o.painted = 0; } }                 // the pause at the end of a sample, then it plays again
+  else {
+    o.pos[o.mode] = Math.min(len, officePos(run) + (o.last ? Math.min(0.25, (now - o.last) / 1000) : 0) * o.speed);
+    if (o.pos[o.mode] >= len) { o.hold = now + SAMPLE_HOLD_MS; o.painted = 0; }
+  }
+  o.last = now;
+  o.raf = requestAnimationFrame(officeFrame);
+  if (!o.painted || now - o.painted >= PAINT_MS) { o.painted = now; keepFocus(renderOffice); }
+}
+function officeSet(change) {
+  Object.assign(state.ofc, change);
+  state.ofc.hold = 0;
+  render();
 }
 
 function tick() {
@@ -2165,16 +2746,18 @@ function onImport() {
   const added = addRepos(repos);
   say("link-msg", "Đã liên kết thêm " + added + " repo" + (rejected.length ? "; bỏ qua " + rejected.length + " mục không hợp lệ (" + rejected.slice(0, 3).join(", ") + ")" : "") + ".", rejected.length ? "bad" : "ok");
 }
+// The Agent tab and the Office tab read the same file: each answers in its own message line, and either one shows it in both tabs.
 async function onOfficeFile(ev) {
-  const file = ev.target.files && ev.target.files[0];
+  const file = ev.target.files && ev.target.files[0], msg = ev.target.dataset.msg || "office-msg";
   if (!file) return;
-  if (file.size > 2000000) return say("office-msg", "File quá lớn (tối đa 2 MB).", "bad");
+  if (file.size > 2000000) return say(msg, "File quá lớn (tối đa 2 MB).", "bad");
   let json;
-  try { json = JSON.parse(await file.text()); } catch (e) { return say("office-msg", "File không phải JSON.", "bad"); }
+  try { json = JSON.parse(await file.text()); } catch (e) { return say(msg, "File không phải JSON.", "bad"); }
   const view = readOffice(json);
-  if (!view.ok) return say("office-msg", view.error, "bad");
+  if (!view.ok) return say(msg, view.error, "bad");
   state.office = state.realOffice = view;
-  say("office-msg", "Đã nạp snapshot (" + view.agents.length + " agent).", "ok");
+  state.ofc.files[view.mode] = view; state.ofc.mode = view.mode; state.ofc.source = "file";
+  say(msg, "Đã nạp snapshot " + (view.mode === "team" ? "pipeline VPS" : "subagent Claude") + " (" + view.agents.length + " agent).", "ok");
   render();
 }
 function toggleDemo() {
@@ -2227,6 +2810,7 @@ function init() {
   $("grp-flow").addEventListener("click", () => { state.group = "flow"; render(); });
   $("grp-repo").addEventListener("click", () => { state.group = "repo"; render(); });
   window.addEventListener("resize", () => requestAnimationFrame(drawEdges));
+  window.addEventListener("resize", () => requestAnimationFrame(() => { if (state.view === "office") renderOffice(); }));
   $("add").addEventListener("click", onAdd);
   $("add-repo").addEventListener("keydown", (e) => { if (e.key === "Enter") onAdd(); });
   $("pick").addEventListener("click", () => {
@@ -2240,6 +2824,21 @@ function init() {
   $("import").addEventListener("click", onImport);
   $("demo").addEventListener("click", toggleDemo);
   $("office-file").addEventListener("change", onOfficeFile);
+  $("ofc-input").addEventListener("change", onOfficeFile);
+  state.ofc.playing = !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);           // with less motion asked for, a sample waits for Play
+  $("ofc-claude").addEventListener("click", () => officeSet({ mode: "claude" }));
+  $("ofc-team").addEventListener("click", () => officeSet({ mode: "team" }));
+  $("ofc-file").addEventListener("click", () => officeSet({ source: "file" }));
+  $("ofc-sample").addEventListener("click", () => officeSet({ source: "sample" }));
+  $("ofc-play").addEventListener("click", () => {
+    const o = state.ofc, run = officeRun();
+    if (!o.playing && run && officePos(run) >= run.end - run.start) o.pos[o.mode] = 0;                  // Play at the end starts the sample over
+    officeSet({ playing: !o.playing });
+  });
+  $("ofc-restart").addEventListener("click", () => { state.ofc.pos[state.ofc.mode] = 0; officeSet({ playing: true }); });
+  for (const b of document.querySelectorAll("#ofc-controls [data-speed]")) b.addEventListener("click", () => officeSet({ speed: Number(b.dataset.speed) }));
+  $("ofc-pos").addEventListener("input", () => { state.ofc.pos[state.ofc.mode] = Number($("ofc-pos").value); officeSet({}); });
+  document.addEventListener("visibilitychange", officeLoop);
   $("refresh").addEventListener("click", () => { state.files.clear(); refreshAll(); });
   $("interval").addEventListener("change", () => { state.interval = Number($("interval").value); saveStore(); schedule(); renderLive(); });
   $("token").addEventListener("input", () => { state.tokenEditing = true; clearCaches(); render(); });             // the text is the new token from the first character: what was read under the old one goes at once, not when the field loses the focus

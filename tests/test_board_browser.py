@@ -23,7 +23,7 @@ PAGE_URL = "https://radar.test/board.html"
 TOKEN = "github_pat_TESTONLY_not_a_real_token_0123456789"
 REPO = "demo/app"
 STORE_KEY = "radar-board.v1"
-VIEWS = ["home", "board", "repos", "schedule", "inbox", "agents", "health", "settings"]
+VIEWS = ["home", "board", "repos", "schedule", "inbox", "agents", "office", "health", "settings"]
 CORS = {"access-control-allow-origin": "*", "access-control-expose-headers": "etag, retry-after, x-ratelimit-remaining, x-ratelimit-limit, x-ratelimit-reset"}
 PREFLIGHT = {**CORS, "access-control-allow-headers": "authorization, accept, x-github-api-version, if-none-match", "access-control-allow-methods": "GET, OPTIONS"}
 EVIL = '<img src=x onerror="window.__pwn=1">'
@@ -597,6 +597,209 @@ def test_an_office_snapshot_is_read_in_the_browser_and_kept_nowhere(ui, tmp_path
     notjson.write_text("not json", encoding="utf-8")
     ui.set_input_files("#office-file", str(notjson))
     wait(ui, "document.getElementById('office-msg').textContent.includes('không phải JSON')")
+
+
+# ---- Office: the agent office, replayed from the sample or drawn from a snapshot file ----------------------------------------------
+
+def office(page, mode="claude"):
+    open_tab(page, "office")
+    if mode == "team":
+        page.click("#ofc-team")
+    wait(page, "document.querySelectorAll('#ofc-floor .ofc-card').length > 0")
+
+
+def pause(page):
+    if text(page, "#ofc-play-word") == "Tạm dừng":
+        page.click("#ofc-play")
+    assert text(page, "#ofc-play-word") == "Chạy"
+
+
+def card(agent):
+    return f".ofc-card[data-agent='{agent}']"
+
+
+def content(page, selector):
+    """textContent, not innerText: a department's name is drawn in capitals, and what is compared is what the data said."""
+    return page.eval_on_selector(selector, "e => e.textContent")
+
+
+def test_the_office_replays_the_sample_with_a_robot_at_each_desk_and_a_line_where_work_was_handed_over(ui):
+    seen = len(ui.seen)
+    office(ui)
+    assert ui.get_attribute("#ofc-sample", "aria-pressed") == "true" and ui.get_attribute("#ofc-claude", "aria-pressed") == "true"
+    assert ui.eval_on_selector_all(".ofc-lane > header h3", "els => els.map(e => e.textContent)") == ["Yêu cầu", "Kiến trúc", "Triển khai", "Kiểm chứng"]
+    assert ui.locator(".ofc-card").count() == 7 and ui.locator("#ofc-floor svg.bot").count() == 8                 # the main session has a desk too
+    assert ui.eval_on_selector("#ofc-floor svg.bot", "e => e.namespaceURI") == "http://www.w3.org/2000/svg"
+    start = float(ui.input_value("#ofc-pos"))
+    assert 40 <= start <= 50                                                                       # a sample opens part-way in, with work already going
+    wait(ui, f"Number(document.getElementById('ofc-pos').value) > {start + 0.5}")                  # and plays by itself
+    pause(ui)
+    stopped = ui.input_value("#ofc-pos")
+    ui.wait_for_timeout(500)
+    assert ui.input_value("#ofc-pos") == stopped
+    ui.fill("#ofc-pos", "64")                                                                      # the moment of the picture the tab was made from
+    wait(ui, "document.getElementById('ofc-time').textContent === '01:04 / 01:52'")
+    assert ui.get_attribute("#ofc-pos", "aria-valuetext") == "01:04 trên 01:52"                     # a screen reader hears the moment, not a count of seconds
+    boss = text(ui, ".ofc-boss")
+    assert "REQ-031" in boss and "T3" in boss and "77%" in boss and text(ui, ".ofc-line") == "Chờ test-engineer: Diễn tập migration và đăng nhập lại trên 2 client"
+    assert [x.strip() for x in ui.eval_on_selector_all(".ofc-slot b", "els => els.map(e => e.textContent)")] == ["2/3", "1/1", "1/1"]
+    assert "null" not in content(ui, ".ofc-budget") and "undefined" not in content(ui, "#ofc-floor")       # a note that is not there is left out, not written as a word
+    assert ui.get_attribute(card("test-engineer"), "data-state") == "working" and "nhận việc" in text(ui, card("test-engineer")) and "~8%" in text(ui, card("test-engineer"))
+    assert ui.get_attribute(card("code-reviewer-t3"), "data-state") == "done" and "bàn giao" in text(ui, card("code-reviewer-t3")) and "11/16 lượt" in text(ui, card("code-reviewer-t3"))
+    assert ui.get_attribute(f"{card('architect')} svg.bot", "data-state") == "idle" and "Không kích hoạt ở tầng này" in text(ui, card("architect"))
+    edges = ui.eval_on_selector_all("#ofc-floor .ofc-edge", "els => els.map(e => [e.dataset.s, e.querySelector('path').getAttribute('d')])")
+    assert [s for s, _ in edges] == ["done", "done", "done", "active", "active"]                    # the two lines at work are drawn over the quiet ones
+    assert all(re.fullmatch(r"M[\d.]+ [\d.]+ C[\d. ]+", d) for _, d in edges)
+    log = ui.eval_on_selector_all("#ofc-log li", "els => els.map(e => e.textContent)")
+    assert len(log) == 7 and log[0] == "01:02test-engineer→ nhận việc Diễn tập migration và đăng nhập lại trên 2 client"
+    ui.click("[data-speed='8']")
+    assert ui.get_attribute("[data-speed='8']", "aria-pressed") == "true" and ui.get_attribute("[data-speed='2']", "aria-pressed") == "false"
+    ui.click("#ofc-restart")
+    assert text(ui, "#ofc-play-word") == "Tạm dừng" and float(ui.input_value("#ofc-pos")) < 30
+    assert len(ui.seen) == seen and not ui.problems                                                 # the office asks nobody for anything
+
+
+def test_the_pipeline_view_has_a_script_at_its_head_and_each_view_keeps_its_own_moment(ui):
+    office(ui, "team")
+    pause(ui)
+    ui.fill("#ofc-pos", "30")
+    wait(ui, "document.getElementById('ofc-time').textContent === '00:30 / 01:24'")
+    assert ui.get_attribute("#ofc-team", "aria-pressed") == "true" and "team.py" in text(ui, ".ofc-who") and text(ui, ".ofc-req") == "F12"
+    assert ui.locator(".ofc-who svg.bot .term-dot").count() == 3                                    # a terminal, not a robot: team.py is a script
+    assert ui.eval_on_selector_all(".ofc-lane > header h3", "els => els.map(e => e.textContent)") == ["Claude · bạn tự chạy", "Viết test và code", "Soát", "Cổng tự động · script"]
+    assert ui.get_attribute(card("coder"), "data-state") == "working" and "Giới hạn pipeline" in content(ui, ".ofc-budget") and "Claude · spec" in text(ui, card("claude-spec"))
+    ui.click("#ofc-claude")
+    wait(ui, "document.getElementById('ofc-time').textContent.endsWith('/ 01:52')")
+    ui.click("#ofc-team")
+    wait(ui, "document.getElementById('ofc-time').textContent === '00:30 / 01:24'")
+    ui.fill("#ofc-pos", "84")
+    wait(ui, "document.getElementById('ofc-time').textContent === '01:24 / 01:24'")
+    assert text(ui, ".ofc-line") == "Hoàn tất: mọi việc đã xong." and ui.locator(".ofc-card[data-state='done']").count() == 7
+    ui.click("#ofc-play")                                                                          # Play at the end starts the sample over
+    assert float(ui.input_value("#ofc-pos")) < 10 and text(ui, "#ofc-play-word") == "Tạm dừng"
+    assert not ui.problems
+
+
+def test_with_less_motion_asked_for_the_sample_waits_for_play(browser):
+    context, page = new_page(browser)
+    page.emulate_media(reduced_motion="reduce")
+    page.goto(PAGE_URL)
+    office(page)
+    assert text(page, "#ofc-play-word") == "Chạy"
+    at = page.input_value("#ofc-pos")
+    page.wait_for_timeout(500)
+    assert page.input_value("#ofc-pos") == at
+    page.click("#ofc-play")
+    wait(page, f"Number(document.getElementById('ofc-pos').value) > {float(at) + 0.5}")
+    assert page.evaluate("getComputedStyle(document.querySelector(\"#ofc-floor .ofc-card[data-agent='architect'] .zzz\")).animationName") == "none"      # the idle robot's z stays still
+    context.close()
+
+
+def test_a_snapshot_chosen_in_the_office_is_drawn_there_and_in_the_agent_tab_and_its_text_stays_text(ui, tmp_path):
+    office(ui)
+    seen = len(ui.seen)
+    ui.click("#ofc-file")
+    assert "Chưa nạp snapshot của subagent Claude" in text(ui, "#ofc-notes") and ui.locator("#ofc-floor .ofc-card").count() == 0
+    assert text(ui, "#ofc-chip") == "Chưa nạp snapshot" and ui.is_hidden("#ofc-controls") and ui.is_hidden(".ofc-logbox")
+    ui.click("#ofc-notes [data-ofc=load]")
+    assert ui.evaluate("document.getElementById('ofc-load').open") and ui.evaluate("document.activeElement.id") == "ofc-input"
+    now = time.time()
+    snap = {"version": 1, "mode": "claude", "now": now - 30, "live": True, "requirement": {"id": "REQ-77", "tier": "T2", "strategy": "main_with_architect_and_reviewer"},
+            "boss": {"state": "waiting", "waiting_for": "x", "task": EVIL}, "phase": {"steps": ["analysis", "verify"], "current": "verify"}, "hints": ["no_ledger"], "warnings": [EVIL],
+            "progress": {"pct": 50, "agents": 2, "total": 2, "running": 0, "done": 1, "blocked": 1}, "lanes": [{"id": EVIL, "color": "url(x)", "agents": ["x"]}],
+            "agents": {"x": {"id": "x", "state": "blocked", "stalled": True, "task": EVIL}, "y": {"id": EVIL, "state": "done", "note": EVIL, "progress": 1}},
+            "edges": [{"from": "main", "to": "x", "state": "active"}], "log": [{"t": now - 40, "kind": "fail", "agent": "x", "text": EVIL}]}
+    good = Path(tmp_path) / "snapshot.json"
+    good.write_text(json.dumps(snap), encoding="utf-8")
+    ui.set_input_files("#ofc-input", str(good))
+    wait(ui, "document.querySelectorAll('#ofc-floor .ofc-card').length === 2")
+    assert "Đã nạp snapshot subagent Claude (2 agent)" in text(ui, "#ofc-msg") and ui.get_attribute("#ofc-file", "aria-pressed") == "true"
+    assert text(ui, "#ofc-chip").startswith("Snapshot · ") and ui.is_hidden("#ofc-controls")
+    assert "REQ-77" in text(ui, ".ofc-boss") and EVIL in content(ui, ".ofc-line") and "Im lặng" in text(ui, card("x"))
+    lanes = ui.eval_on_selector_all(".ofc-lane", "els => els.map(e => [e.className, e.querySelector('h3').textContent])")
+    assert lanes[0][0] == "ofc-lane dept-slate" and lanes[0][1].startswith("<img") and lanes[1][1] == "Khác"     # an unknown colour is slate; an agent no department named is in "Khác"
+    assert EVIL in content(ui, "#ofc-notes") and "Chưa ghi sổ ngân sách" in text(ui, "#ofc-notes") and "✕ lỗi" in text(ui, "#ofc-log")
+    assert re.match(r"\d\d:\d\d:\d\d", text(ui, "#ofc-log time"))                                  # a file's log is on the clock, a sample's from its start
+    assert ui.locator("#ofc-floor .ofc-edge[data-s='active']").count() == 1
+    assert ui.query_selector("#view-office img") is None and ui.evaluate("window.__pwn") is None
+    open_tab(ui, "agents")
+    assert "REQ-77" in text(ui, "#office-body")                                                    # the same file, in both tabs
+    office(ui)
+    team = {**snap, "mode": "team", "requirement": {"id": "F9"}, "lanes": [{"id": "build", "color": "orange", "agents": ["coder"]}], "agents": {"coder": {"id": "coder", "state": "working"}},
+            "boss": {"state": "waiting", "kind": "script", "waiting_for": "coder"}, "edges": [], "hints": [], "warnings": [], "budget": None}
+    other = Path(tmp_path) / "team.json"
+    other.write_text(json.dumps(team), encoding="utf-8")
+    ui.set_input_files("#ofc-input", str(other))
+    wait(ui, "document.getElementById('ofc-team').getAttribute('aria-pressed') === 'true'")
+    assert text(ui, ".ofc-req") == "F9" and ui.locator(".ofc-card").count() == 1 and "team.py" in text(ui, ".ofc-who")
+    ui.click("#ofc-claude")                                                                        # each view keeps its own file
+    wait(ui, "document.querySelector('.ofc-req').textContent === 'REQ-77'")
+    bad = Path(tmp_path) / "bad.json"
+    bad.write_text(json.dumps({**snap, "mode": "video"}), encoding="utf-8")
+    ui.set_input_files("#ofc-input", str(bad))
+    wait(ui, "document.getElementById('ofc-msg').className.includes('bad')")
+    assert "mode=claude hoặc mode=team" in text(ui, "#ofc-msg") and text(ui, ".ofc-req") == "REQ-77"
+    ui.click("#ofc-sample")
+    wait(ui, "document.querySelector('.ofc-req').textContent === 'REQ-031'")
+    assert len(ui.seen) == seen and "REQ-77" not in json.dumps(ui.evaluate("() => Object.entries(window.localStorage)")) and not ui.problems
+
+
+def test_during_the_demo_the_office_shows_only_the_sample_and_leaving_it_brings_the_file_back(ui, tmp_path):
+    snap = {"version": 1, "mode": "claude", "now": time.time(), "requirement": {"id": "REQ-5"}, "agents": {"a": {"id": "a", "state": "working"}}}
+    path = Path(tmp_path) / "snapshot.json"
+    path.write_text(json.dumps(snap), encoding="utf-8")
+    office(ui)
+    ui.set_input_files("#ofc-input", str(path))
+    wait(ui, "document.querySelector('.ofc-req').textContent === 'REQ-5'")
+    open_tab(ui, "settings")
+    ui.click("#demo")
+    office(ui)
+    assert ui.is_disabled("#ofc-file") and ui.get_attribute("#ofc-sample", "aria-pressed") == "true" and text(ui, ".ofc-req") == "REQ-031"
+    open_tab(ui, "settings")
+    ui.click("#demo")
+    office(ui)
+    assert ui.is_enabled("#ofc-file") and ui.get_attribute("#ofc-file", "aria-pressed") == "true" and text(ui, ".ofc-req") == "REQ-5"
+
+
+def test_the_office_words_are_readable_in_every_look(browser):
+    """The quieter words of the office sit on tinted surfaces (a department, the main session's card): each one against what is really behind it."""
+    def lum(rgb):
+        c = [x / 255 for x in rgb[:3]]
+        c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+    def ratio(a, b):
+        la, lb = sorted((lum(a), lum(b)), reverse=True)
+        return (la + 0.05) / (lb + 0.05)
+
+    probe = """() => {
+      const px = (el, prop) => { const c = document.createElement('canvas').getContext('2d'); c.fillStyle = getComputedStyle(el)[prop]; c.fillRect(0, 0, 1, 1); return Array.from(c.getImageData(0, 0, 1, 1).data.slice(0, 3)); };
+      const q = (s) => document.querySelector(s), out = [];
+      const pair = (name, fg, bg) => out.push({ name, fg: px(fg, 'color'), bg: px(bg, 'backgroundColor') });
+      for (const h of document.querySelectorAll('.ofc-lane > header h3, .ofc-lane > header span')) pair('lane ' + h.textContent, h, h);
+      const next = document.createElement('li'); next.className = 'next'; next.textContent = 'x'; q('.ofc-phase').append(next);          // no step is still to come at 01:04
+      for (const s of ['.ofc-who p', '.ofc-stats dt', '.ofc-line', '.ofc-tags span:not(.tier)', '.ofc-phase li.next']) pair(s, q(s), q('.ofc-boss'));
+      next.remove();
+      pair('tier', q('.ofc-tags .tier'), q('.ofc-tags .tier'));
+      pair('budget note', q('.ofc-budget p'), q('.ofc-budget'));
+      for (const s of ['.role', '.desc', '.meta', '.bar span']) pair('card ' + s, q('.ofc-card ' + s), q('.ofc-card'));
+      pair('tag', q('.ofc-tag:not([hidden])'), q('.ofc-tag:not([hidden])'));
+      const li = q('#ofc-log li');
+      for (const t of ['info', 'success', 'failed', 'warning']) { const k = document.createElement('span'); k.className = 'k tone-' + t; k.textContent = 'x'; li.append(k); pair('log ' + t, k, q('.ofc-logbox')); k.remove(); }
+      pair('log time', q('#ofc-log time'), q('.ofc-logbox'));
+      return out;
+    }"""
+    for theme in ("neon", "classic", "aurora", "candy"):
+        for mode in ("dark", "light"):
+            context, page = new_page(browser, theme=theme, mode=mode)
+            page.goto(PAGE_URL)
+            office(page)
+            pause(page)
+            page.fill("#ofc-pos", "64")
+            wait(page, "document.getElementById('ofc-time').textContent === '01:04 / 01:52'")
+            for got in page.evaluate(probe):
+                assert ratio(got["fg"], got["bg"]) >= 4.5, (theme, mode, got)
+            context.close()
 
 
 # ---- Health and the live indicator ---------------------------------------------------------------------------------------------
@@ -2229,8 +2432,8 @@ def test_auto_refresh_pauses_when_the_quota_runs_low_and_goes_on_when_it_recover
 # ---- the shell: tabs, looks, demo, small screens, frames ------------------------------------------------------------------------------
 
 def test_tabs_show_one_screen_at_a_time_and_work_from_the_keyboard(ui):
-    assert [ui.get_attribute(f"#tab-{v}", "aria-selected") for v in VIEWS] == ["true"] + ["false"] * 7
-    assert [ui.is_visible(f"#view-{v}") for v in VIEWS] == [True] + [False] * 7
+    assert [ui.get_attribute(f"#tab-{v}", "aria-selected") for v in VIEWS] == ["true"] + ["false"] * (len(VIEWS) - 1)
+    assert [ui.is_visible(f"#view-{v}") for v in VIEWS] == [True] + [False] * (len(VIEWS) - 1)
     ui.focus("#tab-home")
     ui.keyboard.press("ArrowRight")
     assert ui.get_attribute("#tab-board", "aria-selected") == "true" and ui.is_visible("#view-board") and not ui.is_visible("#view-home")
@@ -2243,7 +2446,7 @@ def test_tabs_show_one_screen_at_a_time_and_work_from_the_keyboard(ui):
     ui.keyboard.press("Home")
     assert ui.get_attribute("#tab-home", "aria-selected") == "true" and ui.is_visible("#view-home")
     ui.keyboard.press("End")
-    assert [ui.get_attribute(f"#tab-{v}", "tabindex") for v in VIEWS] == ["-1"] * 7 + ["0"]                  # only the current tab is a stop for Tab
+    assert [ui.get_attribute(f"#tab-{v}", "tabindex") for v in VIEWS] == ["-1"] * (len(VIEWS) - 1) + ["0"]                  # only the current tab is a stop for Tab
 
 
 def test_four_looks_and_three_modes_are_chosen_from_a_panel_and_remembered(browser):
@@ -2422,6 +2625,13 @@ def test_nothing_scrolls_sideways_on_a_phone_or_tablet_in_any_screen(browser, wi
         if view == "repos":
             for summary in page.query_selector_all("details.wf > summary"):
                 summary.click()
+        if view == "office":
+            wait(page, "document.querySelectorAll('#ofc-floor .ofc-edge').length > 0")
+            for mode in ("team", "claude"):                                                  # both views of the office, each drawn at its own width
+                page.click(f"#ofc-{mode}")
+                page.wait_for_timeout(100)
+                sizes = page.evaluate("() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth })")
+                assert sizes["scroll"] <= sizes["client"], (view, mode, sizes)
         page.wait_for_timeout(100)
         sizes = page.evaluate("() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth })")
         assert sizes["scroll"] <= sizes["client"], (view, sizes)

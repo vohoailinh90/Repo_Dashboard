@@ -6,9 +6,9 @@ Giao diện làm theo ba ảnh chụp bạn đưa ra làm mẫu: nền tối ki�
 
 ```text
 api.github.com (GET) ─► board.html ◄─ snapshot.json (tùy chọn, nạp bằng tay)
-  runs, jobs, steps,                    ▲
-  workflow files, PR,                   └─ python3 scripts/office/snapshot.py   (Văn phòng agent, repo claude-agent-routing-template)
-  .claude/agents
+  runs, jobs, steps,       ▲            ▲
+  workflow files, PR,      │            └─ python3 scripts/office/snapshot.py   (Văn phòng agent, repo claude-agent-routing-template)
+  .claude/agents           └─ lượt chạy mẫu của tab Office, ghi sẵn trong trang (python3 scripts/office_sample.py, cũng từ snapshot.py ấy)
 ```
 
 ## Các màn hình
@@ -21,6 +21,7 @@ api.github.com (GET) ─► board.html ◄─ snapshot.json (tùy chọn, nạp 
 | **Lịch** | Tuần tới theo từng ngày |
 | **Inbox** | Lượt chạy lỗi hoặc chờ duyệt, PR của agent chờ bạn soát, repo không đọc được (số trên tab là số mục) |
 | **Agent** | Snapshot của Văn phòng agent (nạp file) và hoạt động agent đoán được từ GitHub |
+| **Office** | **Văn phòng agent** vẽ lại trong trang: main session ở trên, các phòng ban bên dưới, mỗi agent là một robot ngồi bàn, đường nét nối hai thẻ khi việc được bàn giao, ngân sách subagent và nhật ký bàn giao; hai kiểu nhìn (**Subagent Claude**, **Pipeline VPS**), phát lại lượt chạy mẫu hoặc vẽ snapshot bạn nạp (xem dưới) |
 | **Health** | Hạn mức GitHub còn lại, số yêu cầu đã gửi, tình trạng đọc từng repo |
 | **Cài đặt** | Token, chu kỳ tự làm mới, liên kết repo, xuất/nhập danh sách, dữ liệu mẫu |
 
@@ -83,7 +84,35 @@ Trạng thái thật của agent (đang làm, đang chờ, bị chặn, ngân s�
 python3 scripts/office/snapshot.py > snapshot.json
 ```
 
-rồi chọn file ở mục *Agent → Phiên agent trên máy bạn*. Trang nhận đúng `version: 1`, `mode: claude`, từ chối thứ khác với lý do, cắt mọi chuỗi và số lượng, và coi mọi chữ trong file là dữ liệu (chỉ `textContent`). File được đọc trong trình duyệt, không gửi đi đâu, không lưu. Muốn có số liệu "sống" thay vì nạp tay thì máy chủ Office (`serve.py`) phải cho phép trang này gọi nó (CORS), và đó là một thay đổi ở repo kia, chưa làm.
+rồi chọn file ở mục *Agent → Phiên agent trên máy bạn* (hoặc ở tab Office, mục *Nạp dữ liệu thật*: cùng một file, hiện ở cả hai tab). Trang nhận đúng `version: 1`, `mode: claude` hoặc `mode: team` (pipeline VPS: `snapshot.py --mode team --team-home /srv/team`), từ chối thứ khác với lý do, cắt mọi chuỗi và số lượng, và coi mọi chữ trong file là dữ liệu (chỉ `textContent`). File được đọc trong trình duyệt, không gửi đi đâu, không lưu. Muốn có số liệu "sống" thay vì nạp tay thì máy chủ Office (`serve.py`) phải cho phép trang này gọi nó (CORS), và đó là một thay đổi ở repo kia, chưa làm.
+
+### Tab Office: Văn phòng agent, vẽ lại trong trang
+
+Trang "Văn phòng agent" gốc ở `claude-agent-routing-template` là một ứng dụng React (Vite, Tailwind) có máy chủ Python riêng (`serve.py`). Trang này giữ đúng giao diện ấy nhưng **không mang ứng dụng sang**: vẫn một file HTML, không build, không thư viện, chính sách CSP băm như cũ, không gọi mạng. Robot, bàn làm việc và đường nối là SVG do script dựng (không có thẻ `<svg` trong trang), mọi chữ vào bằng `textContent`.
+
+| Trên trang | Lấy từ | Ghi chú |
+|---|---|---|
+| Thẻ main session | `boss`, `requirement`, `phase`, `progress` của snapshot | Giai đoạn **suy ra** từ vai nào chạy gần nhất (Office tự ghi chú như vậy), không quan sát trực tiếp. Tiến độ chung là số vai dự kiến đã xong ÷ số vai dự kiến, nên nó **có thể lùi** khi một dự phòng được cấp giữa chừng (lượt mẫu: 77 % của 3 vai rồi 75 % của 4 vai). Snapshot không đo được (`pct: null`) thì hiện "—" |
+| Ngân sách subagent | `budget` | Cơ sở và từng dự phòng báo riêng, không gộp một số; dự phòng chưa cấp vẽ nét đứt. Pipeline VPS không có ngân sách: ô ghi rõ là team.py chưa ghi số lượt thử |
+| Phòng ban và thẻ agent | `lanes` (màu: chỉ sáu tên đã biết, tên lạ thành xám), `agents` | Agent mà không phòng ban nào nêu tên thì vào phòng **Khác**, không bị bỏ; một agent được hai phòng nêu thì chỉ vẽ ở phòng đầu. Tiến độ từng agent là **ước lượng** (số lần gọi công cụ ÷ `maxTurns`, dấu `~`), như Office ghi |
+| Đường nối | `edges` | Chỉ vẽ cạnh có trong snapshot, giữa hai thẻ đang có trên trang; đo từ vị trí thật của thẻ ở mỗi lần vẽ, nên theo đúng bố cục ở mọi bề rộng. Đường đang chạy vẽ trên các đường yên |
+| Nhật ký bàn giao | `log` (8 dòng mới nhất) | Lượt mẫu ghi thời gian **kể từ đầu lượt chạy** (khớp thanh thời gian); file thật ghi giờ theo đồng hồ máy bạn |
+| Ghi chú | `hints`, `warnings` của file | Snapshot nói chưa có sự kiện, chưa ghi sổ ngân sách hay không thấy feature nào thì tab nói lại điều đó kèm lệnh cần chạy, thay vì vẽ một văn phòng trống |
+
+**Chạy mẫu.** Hai lượt chạy ghi sẵn của Office (`scripts/office/demo/claude-t3`: yêu cầu T3, 1 phút 52 giây; `team-f12`: feature F12 của pipeline, 1 phút 24 giây) được ghi vào trang bởi `scripts/office_sample.py`: script hỏi chính `snapshot.py` của template snapshot ở từng phần mười giây, giữ snapshot đầu và sau đó chỉ phần thay đổi (khoảng 30 KB cho cả hai lượt), rồi tự kiểm rằng ghép các phần ấy lại cho ra đúng từng snapshot đã hỏi. Trang ghép lại như thế (`officeAt`) và đọc kết quả bằng **đúng hàm đọc file** (`readOffice`), nên lượt mẫu đi qua cùng đường với dữ liệu thật. Mọi tên và số trong đó là của lượt ghi mẫu, không phải của yêu cầu thật; tab ghi điều đó ngay dưới văn phòng.
+
+Phát lại: Chạy/Tạm dừng, Từ đầu, tốc độ 1×/2×/4×/8×, thanh kéo tới bất kỳ lúc nào. Mỗi kiểu nhìn nhớ vị trí riêng. Lượt mẫu mở ở 40 % (đã có agent làm việc), chạy hết thì dừng 2,5 giây rồi chạy lại. Đồng hồ chỉ chạy khi tab Office đang hiện và trang không bị ẩn. Hệ thống chọn giảm chuyển động thì lượt mẫu **đứng yên chờ bấm Chạy**, và robot, đường nối không chuyển động.
+
+Trong lúc xem **dữ liệu mẫu** (Cài đặt), tab Office chỉ cho xem lượt chạy mẫu (nút *Snapshot đã nạp* tắt), để không có dữ liệu thật nào nằm dưới biểu ngữ "dữ liệu mẫu"; thoát mẫu thì snapshot đã nạp quay lại.
+
+**Không mang sang:** nút đổi ngôn ngữ (cả trang này là tiếng Việt), ngăn chi tiết mở khi bấm một thẻ, và nguồn "sống" từ `serve.py` (máy chủ ấy chưa cho trang khác gọi nó, như đã nói ở trên). Ghi lại lượt mẫu cần một checkout của template:
+
+```bash
+python3 scripts/office_sample.py --template ../claude-agent-routing-template          # ghi lại khối office-sample trong index.html
+python3 scripts/office_sample.py --template ../claude-agent-routing-template --check  # thoát 1 nếu khác thứ template làm ra bây giờ
+```
+
+Khối dữ liệu là `application/json`, không phải script, nên không nằm trong mã băm CSP; sửa nó không cần chạy `sync_csp.py`.
 
 ## Hạn mức và chi phí
 
@@ -107,7 +136,7 @@ Số sao đọc từ trang github.com (làm tròn); API công khai trả 403 qua
 
 | Nguồn | Gần yêu cầu ở | Dùng thế nào |
 |---|---|---|
-| **Văn phòng agent** (`claude-agent-routing-template`, của bạn) | agent đang chạy, ngân sách, tiến độ | **Dùng**: trang đọc snapshot của nó |
+| **Văn phòng agent** (`claude-agent-routing-template`, của bạn) | agent đang chạy, ngân sách, tiến độ | **Dùng**: trang đọc snapshot của nó, và tab Office vẽ lại giao diện của nó (hình robot, bảng màu phòng ban, cách đặt đường nối, câu chữ tiếng Việt) bằng HTML thuần; lượt mẫu do chính `snapshot.py` của nó làm ra |
 | **Automation-UI-Kit** (của bạn, MIT) | màu trạng thái, thanh lịch sử | **Dùng token và kiểu, không dùng code React**: trạng thái là chấm màu + chữ trung tính (màu chữ không bao giờ là chỗ duy nhất mang nghĩa), màu theo token đã kiểm tương phản, dải lịch sử kiểu tracker. Trang là HTML thuần để chạy từ một file, nên không nhập được component React |
 | [DashGit](https://github.com/javiertuya/dashgit) (MIT, 17★) | trang trình duyệt, nhiều repo, issue/PR | Tham khảo. Khác ở chỗ lưu token trong `localStorage` (trang này không), và không có job/bước hay cron |
 | cronstrue, cron-parser (MIT, ~1,5k★, số liệu từ trang tổng hợp) | mô tả và tính giờ cron | **Không nhúng**: cần phần rất nhỏ, và chính sách của trang cấm script từ nơi khác. Tự viết ~60 dòng, kiểm trên 84 tổ hợp với bộ so chuẩn tìm từng phút viết riêng bằng Python |
@@ -134,9 +163,10 @@ Gitdeck hiện trong một lượt tìm với ~390 sao nhưng chưa kiểm đư�
 - Đột biến: hơn 100 lần thử phá chỗ sửa rồi chạy test (12 cho bản đầu, 10 cho giao diện mới, rồi 4 đến 9 lần sau mỗi vòng soát của người soát độc lập và của Codex): đảo trạng thái lỗi, nối PR ở nhánh mặc định hay không xét repo nguồn, bỏ đường vàng, luật 14 ngày, múi giờ và giờ chuyển mùa, trang job và danh sách API chỉ đọc một trang, bộ nhớ job không theo lần thử, số hạn mức đến muộn, phạm vi `on` của lịch và của `workflow_dispatch`, tên nhánh và đường dẫn bị cắt, cảnh báo im lặng, lần đọc job đầu bị lỗi mà giữ mãi, bước vượt giới hạn bị cắt im lặng, danh sách `on` không thụt lề, danh sách PR lỗi bị tính là rỗng, giờ bị đồng hồ nhảy qua bị bỏ mất, cron dày hơn 5 phút được đếm từng phút, danh sách workflow lỗi bị tính là rỗng, lượt đọc vẫn chạy tiếp sau khi bật mẫu, anchor YAML trong khối lịch, tự làm mới tiếp tục sau giới hạn thứ cấp, mức chờ bị đặt lại bởi một câu trả lời đến muộn hay không bị đặt lại bởi 304, dữ liệu bị lỗi chờ thay thế, bộ lọc repo còn nhớ một repo đã bị bỏ liên kết, anchor trước giá trị của `on`, bản đọc dở thay bản đọc đủ, câu trả lời mở đầu mức chờ không tính là mất yêu cầu, danh sách flow nhiều dòng, workflow đang tắt không được đọc, trigger của workflow bật và tắt dùng chung một nút, dấu # trong chuỗi bị coi là ghi chú, thêm hàng loạt repo không xếp hàng, và nhiều chỗ khác. Tất cả cuối cùng đều bị test bắt. Một số lọt lúc đầu và test được bổ sung cho từng cái (phím Home, phạm vi `on` không đóng ở khóa cấp cao kế tiếp, cách xử lý ngoặc kép và ghi chú trong ánh xạ một dòng, một trang job hoặc workflow lỗi sau trang đầu, ghi chú "còn thiếu" ở đường mở dòng), và hai đột biến là tương đương (không đổi hành vi nên không phải lỗ hổng của test).
 - Với **GitHub thật** (đọc repo công khai `vohoailinh90/Github-radar`, không token, ở bản đầu): CORS cho phép các header của trang, 304 trả đúng cho JS, lịch `0 1 * * 3,6` hiện "01:00 UTC, T4 T7, kế tiếp 08:00 Th 7", và phát hiện lỗi "workflow bị chen mất" đã sửa. **Bản giao diện mới chưa chạy lại với GitHub thật**, chỉ với GitHub giả; phần đọc dữ liệu không đổi.
 - Xem bằng mắt (ảnh chụp Chromium): Neon tối và sáng, Aurora tối, Candy tối, Classic sáng, và màn hình điện thoại. Các tổ hợp còn lại chỉ được kiểm bằng độ tương phản, **chưa xem tận mắt**.
+- **Tab Office**: dưới Node, cách đọc snapshot hai kiểu nhìn (màu, trạng thái đường nối và nhãn chỉ nhận giá trị đã biết; mọi danh sách có trần), phòng ban "Khác" và agent chỉ vẽ một lần, hình học đường nối, câu chữ của thẻ và của main session, phép ghép bản ghi (không chạm prototype), và lượt mẫu ở các mốc 0, 30, 64, 112 giây (01:04 khớp ảnh mẫu: REQ-031, 77 %, chờ test-engineer, ngân sách 2/3, 1/1, 1/1). Trong Chromium: lượt mẫu tự chạy, dừng, kéo, đổi tốc độ, chạy lại từ đầu, chạy lại khi bấm Chạy ở cuối, mỗi kiểu nhìn nhớ vị trí riêng, đường đang chạy vẽ trên cùng, không gửi yêu cầu nào; giảm chuyển động thì đứng yên chờ Chạy; nạp snapshot ở tab Office hiện ở cả tab Agent, chữ lạ trong mọi trường chỉ là chữ, file mode team chuyển sang kiểu nhìn pipeline, file sai bị từ chối mà bản cũ vẫn giữ; trong lúc xem dữ liệu mẫu chỉ có lượt mẫu; không tràn ngang ở 320/390/768 px ở cả hai kiểu nhìn; chữ mờ trên nền phòng ban, trên thẻ main session, nhãn trên thẻ, ký hiệu của nhật ký ≥ 4,5:1 ở cả 8 tổ hợp giao diện. Đã xem bằng mắt: Neon sáng và tối, Aurora sáng (pipeline), Candy tối ở 390 px, so với ảnh mẫu của Văn phòng agent. Với `OFFICE_TEMPLATE` trỏ vào checkout của template, test kiểm lượt mẫu trong trang đúng bằng thứ `snapshot.py` của nó làm ra bây giờ. Đột biến: 20 lần phá tab Office rồi chạy test (màu hay trạng thái đường nối lạ lọt qua, agent mất phòng hoặc vẽ hai lần, bản ghi ghép sai hay áp bước trước giờ, đường nối ra sai cạnh, agent im lặng hiện như đang làm, `pct: null` hiện 0 %, từ chối mode team, đường đang chạy không nằm trên, dữ liệu thật hiện trong lúc xem mẫu, lượt mẫu tự chạy khi đã chọn giảm chuyển động, nhật ký mẫu theo đồng hồ, chữ "null" trong ô ngân sách, một file cho cả hai kiểu nhìn, Chạy ở cuối không chạy lại, hai màu chữ thiếu tương phản): tất cả bị bắt. Hai cái lọt ở lần đầu (chặn `__proto__` khi ghép bản ghi, biên vài pixel của đường nối) và test được bổ sung cho từng cái.
 - Hai lỗi bố cục chỉ lộ ra nhờ test tràn ngang: lưới không co lại theo ô (`min-width`), và chữ dành cho trình đọc màn hình (`position: absolute`) thoát khỏi vùng cuộn của dải pipeline rồi kéo giãn cả trang. Cả hai đã sửa.
 
-**Chưa kiểm:** token thật (fine-grained, repo private; tên các quyền ở trên là theo tài liệu GitHub, chưa thử), việc 304 miễn phí khi có token, nút *Chọn từ tài khoản* với `/user/repos` thật, một snapshot do hook thật sinh ra (đã thử với snapshot mẫu do chính mã của Office tạo: đặt `OFFICE_TEMPLATE` rồi chạy `tests/test_board.py`), trình duyệt khác ngoài Chromium, trình đọc màn hình thật (mới kiểm vai trò, nhãn và phím), và độ giống với ảnh mẫu theo từng điểm ảnh (làm theo bố cục và cách thể hiện, không so từng pixel).
+**Chưa kiểm:** token thật (fine-grained, repo private; tên các quyền ở trên là theo tài liệu GitHub, chưa thử), việc 304 miễn phí khi có token, nút *Chọn từ tài khoản* với `/user/repos` thật, một snapshot do hook thật sinh ra (đã thử với snapshot mẫu do chính mã của Office tạo: đặt `OFFICE_TEMPLATE` rồi chạy `tests/test_board.py`), trình duyệt khác ngoài Chromium, trình đọc màn hình thật (mới kiểm vai trò, nhãn và phím), và độ giống với ảnh mẫu theo từng điểm ảnh (làm theo bố cục và cách thể hiện, không so từng pixel). Ở tab Office: một snapshot do hook thật sinh ra (mới thử snapshot mẫu do `snapshot.py` làm ra và file viết tay), một snapshot `mode: team` từ thư mục làm việc thật của team.py, tab Office trên trình duyệt ngoài Chromium, và việc phát lại có giật trên máy yếu hay không (đo được thì mới nói).
 
 ## Giữ trang đúng với mã
 
