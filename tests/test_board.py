@@ -29,11 +29,16 @@ def _demo() -> dict:
     return json.loads(re.search(r'id="board-demo">(.*?)</script>', HTML, re.S).group(1))
 
 
+def _sample() -> dict:
+    return json.loads(re.search(r'id="office-sample">(.*?)</script>', HTML, re.S).group(1))
+
+
 FUNCTIONS = ("parseRepo, parseRepoList, sameRepo, safeWorkflowPath, clip, normInfo, normWorkflow, normRun, normJob, normPull, runState, stepState, stepCounts, "
              "runProgress, lastDone, isFailing, orderWorkflows, sparkHistory, repoHealth, agentKind, agentActivity, parseCron, occurrences, nextOccurrence, "
              "describeCron, extractCrons, hasDispatch, lowOnQuota, ago, fmtDuration, weekPlan, countScheduled, summarize, readOffice, buildDemo, demoOffice, "
              "runStatus, workflowStatus, prStatus, codeOf, runsWorthANode, boardModel, filterBoard, chainOf, waveProgress, boxState, seconds, inferStages, flowOf, jobRows, inboxItems, readyNow, demoSteps, "
-             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop, closestMinutes, coolOff, stripComment, flowStart, flowDepth, flowSequenceOf, innerOf")
+             "isStale, isStaleFailing, linkedPull, eventWord, zonedToUtc, zoneOffset, validZone, cronLabel, morePages, gatherJobs, mergeRate, jobKey, pathUrl, flowTop, closestMinutes, coolOff, stripComment, flowStart, flowDepth, flowSequenceOf, innerOf, "
+             "officeMerge, officeAt, officeLanes, officeEdge, officeDescribe, officeMeta, officeBossLine, officePhases, officeName, officeRole, mmss")
 
 
 def _node(cases: list) -> list:
@@ -52,6 +57,15 @@ process.stdout.write(JSON.stringify(cases.map(([name, args]) => fns[name](...arg
 
 def _one(name, *args):
     return _node([[name, list(args)]])[0]
+
+
+def _node_expr(expression: str):
+    """One JavaScript expression evaluated after the page's LOGIC block, for what JSON cannot carry back (a prototype, say)."""
+    if NODE is None:
+        pytest.skip("node is not installed")
+    out = subprocess.run([NODE, "-e", f"{_logic()}\nprocess.stdout.write(JSON.stringify({expression}));"], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
 
 
 # ---- the page keeps its CSP hashes in step ---------------------------------------------------------------------------------
@@ -593,7 +607,7 @@ def test_the_snapshot_the_office_demo_makes_is_accepted():
 
 
 @pytest.mark.parametrize("snap,words", [(None, "không phải snapshot"), ([], "không phải snapshot"), ("x", "không phải snapshot"), (_snapshot(version=2), "version 1"),
-                                        (_snapshot(mode="team"), "mode=claude"), ({"version": 1}, "mode=claude")])
+                                        (_snapshot(mode="video"), "mode=claude hoặc mode=team"), ({"version": 1}, "mode=claude")])
 def test_anything_else_is_refused_with_a_reason(snap, words):
     got = _one("readOffice", snap)
     assert got["ok"] is False and words in got["error"]
@@ -639,6 +653,129 @@ def test_the_demo_builds_the_models_the_page_draws():
 def test_the_demo_snapshot_goes_through_the_same_reader():
     view = _one("demoOffice", _demo(), NOW)
     assert view["ok"] and view["atMs"] == NOW and {a["id"] for a in view["agents"]} == {"architect", "code-reviewer"} and view["log"][0]["t"] == NOW - 20000
+
+
+# ---- the Office tab: departments, lines, the words of a card, and the sample runs replayed from a recording -------------------------
+
+def test_a_pipeline_snapshot_is_read_as_well_and_its_coordinator_is_a_script():
+    view = _one("readOffice", _snapshot(mode="team", boss={"state": "waiting", "kind": "script", "waiting_for": "coder"}, budget=None, feature="F12"))
+    assert view["ok"] and view["mode"] == "team" and view["boss"]["kind"] == "script" and view["feature"] == "F12"
+    assert view["ledger"] is False and view["budget"] == []                                     # "no budget" is said, not drawn as an empty one
+
+
+def test_the_reader_keeps_departments_lines_tags_and_turns_and_only_the_values_it_knows():
+    agents = {"a": {"id": "a", "state": "working", "tag": "received", "turns": {"used": 3, "max": 12}, "effort": "high", "kind": "robot"},
+              "b": {"id": "b", "state": "done", "tag": "<b>x</b>", "turns": {"used": -1, "max": "many"}, "kind": "script"}}
+    view = _one("readOffice", _snapshot(agents=agents, lanes=[{"id": "build", "color": "orange", "agents": ["a", "b"]}, {"id": "x", "color": "url(evil)", "agents": "a"}],
+                                        edges=[{"from": "main", "to": "a", "state": "active"}, {"from": "a", "to": "main", "state": "exploding"}],
+                                        span={"start": 1760000000, "end": 1760000112}, hints=["no_events"], warnings=["w"], progress={"pct": None, "running": 1}))
+    a, b = view["agents"]
+    assert a["tag"] == "received" and a["turns"] == {"used": 3, "max": 12} and a["effort"] == "high" and a["kind"] == "robot"
+    assert b["tag"] is None and b["turns"] == {"used": 0, "max": None} and b["kind"] == "script"
+    assert view["lanes"] == [{"id": "build", "color": "orange", "agents": ["a", "b"]}, {"id": "x", "color": "slate", "agents": []}]       # an unknown colour is never passed on
+    assert [e["state"] for e in view["edges"]] == ["active", "planned"]
+    assert view["span"] == {"start": 1760000000000, "end": 1760000112000} and view["hints"] == ["no_events"] and view["warnings"] == ["w"]
+    assert view["progress"]["known"] is False and view["progress"]["pct"] == 0                   # drawn as "—", not as 0 %
+
+
+def test_hostile_or_oversized_departments_and_lines_stay_bounded():
+    evil = "<img src=x onerror=alert(1)>" * 50
+    view = _one("readOffice", _snapshot(lanes=[{"id": evil, "color": "aqua", "agents": [evil] * 100}] * 20, edges=[{"from": evil, "to": evil, "state": evil}] * 100,
+                                        hints=[evil] * 20, warnings=[evil] * 20, span={"start": 5, "end": 1}, boss={"state": "working", "kind": "<svg>"}))
+    assert len(view["lanes"]) == 8 and len(view["lanes"][0]["agents"]) == 40 and len(view["lanes"][0]["id"]) <= 30 and len(view["lanes"][0]["agents"][0]) <= 60
+    assert len(view["edges"]) == 60 and view["edges"][0]["state"] == "planned" and len(view["hints"]) == 6 and len(view["warnings"]) == 5
+    assert view["span"] is None and view["boss"]["kind"] == "robot"                               # a span that ends before it starts is no span
+
+
+def test_every_agent_has_a_department_once_and_one_no_department_names_goes_to_other():
+    view = _one("readOffice", _snapshot(agents={k: {"id": k, "state": "idle"} for k in ("a", "b", "c")},
+                                        lanes=[{"id": "requirements", "color": "aqua", "agents": ["a", "ghost"]}, {"id": "review", "color": "violet", "agents": ["a", "b"]},
+                                               {"id": "empty", "color": "slate", "agents": ["ghost"]}]))
+    lanes = _one("officeLanes", view)
+    assert [(l["id"], l["label"], [a["id"] for a in l["agents"]]) for l in lanes] == [("requirements", "Yêu cầu", ["a"]), ("review", "Soát", ["b"]), ("other", "Khác", ["c"])]
+
+
+def test_a_handoff_line_runs_from_the_bottom_of_the_upper_card_to_the_top_of_the_lower_one_or_side_to_side():
+    down, up, side, nearly = _node([["officeEdge", [{"x": 0, "y": 0, "w": 100, "h": 50}, {"x": 200, "y": 100, "w": 100, "h": 50}]],
+                                    ["officeEdge", [{"x": 200, "y": 100, "w": 100, "h": 50}, {"x": 0, "y": 0, "w": 100, "h": 50}]],
+                                    ["officeEdge", [{"x": 0, "y": 0, "w": 100, "h": 50}, {"x": 300, "y": 10, "w": 100, "h": 50}]],
+                                    ["officeEdge", [{"x": 0, "y": 0, "w": 100, "h": 50}, {"x": 200, "y": 47, "w": 100, "h": 50}]]])
+    assert down == {"d": "M50.0 50.0 C50.0 75.0 250.0 75.0 250.0 100.0", "end": [250, 100]}
+    assert up == {"d": "M250.0 100.0 C250.0 75.0 50.0 75.0 50.0 50.0", "end": [50, 50]}
+    assert side == {"d": "M100.0 25.0 C200.0 25.0 200.0 35.0 300.0 35.0", "end": [300, 35]}
+    assert nearly == {"d": "M50.0 50.0 C50.0 48.5 250.0 48.5 250.0 47.0", "end": [250, 47]}         # a card that overlaps by a few pixels is still below
+    assert all(re.fullmatch(r"M[\d.]+ [\d.]+ C[\d. ]+", x["d"]) for x in (down, up, side))        # numbers and nothing else, like the board's lines
+
+
+def test_what_a_card_and_the_main_session_say():
+    a = lambda **k: {"id": "test-engineer", "state": "idle", "task": "", "note": "", "stalled": False, **k}       # noqa: E731
+    said = _node([["officeDescribe", [a(state="working", task="Diễn tập")]], ["officeDescribe", [a(state="reviewing")]], ["officeDescribe", [a(state="blocked", stalled=True, task="x")]],
+                  ["officeDescribe", [a(state="blocked", note="gates đỏ")]], ["officeDescribe", [a(state="done", note="2 mục high", task="t")]], ["officeDescribe", [a(state="waiting", note="awaiting_spec")]],
+                  ["officeDescribe", [a()]], ["officeDescribe", [a(id="someone-else")]], ["officeDescribe", [a(id="__proto__")]]])
+    assert said == ["Diễn tập", "Đang làm việc", "Im lặng quá lâu hoặc chưa bao giờ bắt đầu", "gates đỏ", "2 mục high", "Chờ bạn viết spec bằng Claude Code.",
+                    "Dự phòng, chờ người soát leo thang", "Chưa có việc", "Chưa có việc"]
+    assert _one("officeMeta", {"model": "sonnet", "effort": "high", "turns": {"used": 9, "max": 12}}) == "sonnet · high · 9/12 lượt"
+    assert _one("officeMeta", {"model": "sample/free-a", "effort": "", "turns": None}) == "sample/free-a"
+    assert _node([["officeName", ["main", "team"]], ["officeName", ["claude-spec", "team"]], ["officeName", ["constructor", "claude"]], ["officeRole", ["toString"]]]) == ["team.py", "Claude · spec", "constructor", "Agent khác"]
+    waiting = {"mode": "claude", "boss": {"state": "waiting", "task": "Diễn tập", "waitingFor": "test-engineer"}}
+    assert _one("officeBossLine", waiting) == "Chờ test-engineer: Diễn tập" and _one("officeBossLine", {"mode": "team", "boss": {"state": "done", "task": "", "waitingFor": ""}}) == "Hoàn tất: mọi việc đã xong."
+    phases = _one("officePhases", {"phase": {"steps": ["spec", "tester", "coder"], "current": "tester"}})
+    assert [(p["label"], p["status"]) for p in phases] == [("Spec", "past"), ("Test", "now"), ("Code", "next")]
+    assert [p["status"] for p in _one("officePhases", {"phase": {"steps": ["spec", "tester"], "current": "done"}})] == ["past", "past"]
+    assert _node([["mmss", [0]], ["mmss", [64.9]], ["mmss", [112]], ["mmss", [-3]]]) == ["00:00", "01:04", "01:52", "00:00"]
+
+
+def test_a_patch_merges_objects_and_replaces_everything_else_and_never_reaches_a_prototype():
+    merged = _one("officeMerge", {"a": {"b": 1, "c": [1, 2]}, "d": 1}, json.loads('{"a": {"c": [3], "e": null}, "__proto__": {"polluted": 1}}'))
+    assert merged == {"a": {"b": 1, "c": [3], "e": None}, "d": 1}
+    assert _one("officeMerge", {"a": 1}, None) is None and _one("officeMerge", [1], {"a": 1}) == {"a": 1}
+    merged = 'officeMerge({ a: 1 }, JSON.parse(\'{"__proto__": {"polluted": 1}}\'))'
+    assert _node_expr(f"[Object.getPrototypeOf({merged}) === Object.prototype, 'polluted' in {merged}, 'polluted' in {{}}]") == [True, False, False]
+
+
+def test_the_sample_runs_are_read_by_the_same_reader_and_show_what_the_reference_shows():
+    sample = _sample()
+    assert sorted(sample["runs"]) == ["claude", "team"] and sample["version"] == 1
+    cases = [["officeAt", [sample["runs"]["claude"], s]] for s in (0, 30, 64, 112)] + [["officeAt", [sample["runs"]["team"], s]] for s in (30, 84)]
+    views = _node([["readOffice", [snap]] for snap in _node(cases)])
+    start, middle, reference, end, coding, finished = views
+    assert all(v["ok"] for v in views) and [v["mode"] for v in views] == ["claude"] * 4 + ["team"] * 2
+    assert start["boss"]["state"] == "idle" and start["progress"]["pct"] == 0 and not start["log"]
+    assert middle["boss"]["waitingFor"] == "architecture-critic" and {a["id"]: a["state"] for a in middle["agents"]}["architecture-critic"] == "reviewing"
+    # the moment of the screenshot the page was made from: 01:04 of 01:52
+    states = {a["id"]: (a["state"], a["tag"]) for a in reference["agents"]}
+    assert reference["requirement"]["id"] == "REQ-031" and reference["requirement"]["tier"] == "T3" and reference["progress"]["pct"] == 77
+    assert reference["boss"]["waitingFor"] == "test-engineer" and states["test-engineer"] == ("working", "received") and states["code-reviewer-t3"] == ("done", "handoff")
+    assert {(e["from"], e["to"], e["state"]) for e in reference["edges"]} >= {("main", "test-engineer", "active"), ("main", "requirement-analyst", "done")}
+    assert [b["used"] for b in reference["budget"]] == [2, 1, 1] and reference["span"]["end"] - reference["span"]["start"] == 112000
+    assert reference["atMs"] == reference["span"]["start"] + 64000 and reference["log"][0]["agent"] == "test-engineer" and len(reference["log"]) == 7
+    assert end["boss"]["state"] == "done" and end["progress"]["pct"] == 100
+    assert coding["boss"]["kind"] == "script" and coding["boss"]["waitingFor"] == "coder" and coding["requirement"]["id"] == "F12" and coding["ledger"] is False
+    assert finished["boss"]["state"] == "done" and all(a["state"] == "done" for a in finished["agents"])
+
+
+def test_the_sample_only_moves_forward_in_time_and_each_step_changes_something():
+    for run in _sample()["runs"].values():
+        times = [t for t, _ in run["steps"]]
+        assert times == sorted(times) and len(set(times)) == len(times) and 0 < times[0] and times[-1] <= run["end"] - run["start"]
+        assert all(patch for _, patch in run["steps"])
+        # Overall progress may step back: a reserve granted at run time adds a planned role (77 % of 3 roles, then 75 % of 4), as the template counts it.
+        pcts = [v["progress"]["pct"] for v in _node([["readOffice", [s]] for s in _node([["officeAt", [run, t]] for t in [0] + times])])]
+        assert pcts[0] == 0 and pcts[-1] == 100
+
+
+def test_the_sample_names_no_real_repository_and_no_address():
+    block = re.search(r'id="office-sample">(.*?)</script>', HTML, re.S).group(1)
+    assert "vohoailinh90" not in block and not re.search(r"https?://", block) and "</" not in block.replace("<\\/", "")
+
+
+def test_the_sample_is_what_the_template_makes_now():
+    """Needs a checkout of claude-agent-routing-template: set OFFICE_TEMPLATE to its path (skipped otherwise, as in CI)."""
+    checkout = os.environ.get("OFFICE_TEMPLATE")
+    if not checkout or not (Path(checkout) / "scripts" / "office" / "snapshot.py").exists():
+        pytest.skip("set OFFICE_TEMPLATE to a claude-agent-routing-template checkout to compare the sample with what its own code makes")
+    out = subprocess.run(["python3", str(PAGE.parent / "scripts" / "office_sample.py"), "--check", "--template", checkout], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
 
 
 # ---- the board: one graph of what triggers what ------------------------------------------------------------------------------
